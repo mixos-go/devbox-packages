@@ -1,4 +1,4 @@
-name: Build Debian VM Image
+ame: Build Debian VM Image
 
 on:
   push:
@@ -39,9 +39,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             debootstrap qemu-user-static binfmt-support \
             libguestfs-tools qemu-utils \
-            linux-image-generic
+            build-essential flex bison libssl-dev libelf-dev bc \
+            gcc-aarch64-linux-gnu
 
-      - name: Build Debian rootfs + kernel (${{ matrix.arch }})
+      - name: Build Debian rootfs + UML kernel (${{ matrix.arch }})
         run: |
           chmod +x scripts/build-debian-image.sh
           sudo ./scripts/build-debian-image.sh ${{ matrix.arch }}
@@ -74,9 +75,6 @@ jobs:
       - name: List output files
         run: ls -lh output/
 
-      # Rolling "debian-latest" tag — always points to the most recent build.
-      # devbox-second-stage.sh downloads from this tag so it always gets fresh images
-      # without needing to update any config in the app.
       - name: Delete old debian-latest release + tag (if exists)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,15 +88,16 @@ jobs:
           BUILT_AT="$(date '+%Y-%m-%d %H:%M UTC')"
           gh release create debian-latest \
             --title "Debian VM image (latest) — ${BUILT_AT}" \
-            --notes "Rolling release — always the latest Debian bookworm rootfs + kernel for DevBox crosvm VM.
+            --notes "Rolling release — Debian bookworm rootfs + UML kernel for DevBox.
+
+          DevBox uses Linux UML — runs as a normal Termux process, no KVM, Android 11+.
 
           **Built:** ${BUILT_AT}
           **Commit:** ${{ github.sha }}
 
-          Files downloaded by \`devbox-second-stage.sh\` on first DevBox launch:
+          Files downloaded by \`devbox-second-stage.sh\` on first launch:
           - \`debian-rootfs-aarch64.img.gz\` / \`debian-rootfs-x86_64.img.gz\`
-          - \`vmlinuz-aarch64\` / \`vmlinuz-x86_64\`
-          - \`initrd-aarch64.img\` / \`initrd-x86_64.img\`
+          - \`linux-uml-aarch64\` / \`linux-uml-x86_64\`
 
           > Do not delete this release — DevBox downloads from this tag." \
             --prerelease

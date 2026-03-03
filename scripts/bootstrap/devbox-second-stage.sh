@@ -1,19 +1,18 @@
 #!/data/data/com.termux/files/usr/bin/bash
 # DevBox Second Stage Bootstrap
-# Runs after Termux bootstrap extraction.
-# Downloads Debian OS image, sets up crosvm VM + virtio-fs shared mount.
+# Downloads Debian image + UML kernel, writes devbox-{start,shell,forward}.
+#
+# Uses Linux UML (User Mode Linux) — runs as a normal Termux process.
+# No /dev/kvm, no root. Works on Android 11+.
 
 set -e
 
 DEVBOX_HOME="$HOME/.devbox"
 DEBIAN_IMG="$DEVBOX_HOME/debian.img"
-DEBIAN_KERNEL="$DEVBOX_HOME/vmlinuz"
-DEBIAN_INITRD="$DEVBOX_HOME/initrd.img"
+UML_BIN="$DEVBOX_HOME/linux-uml"
+SSH_KEY="$HOME/.ssh/devbox_id_ed25519"
 
-# DevBox shared dir — mounted into VM at /mnt/devbox via virtio-fs
-# Contains: opensandbox/, mobile-agent/ (from bootstrap zip)
 DEVBOX_SHARE="$PREFIX/share/devbox"
-
 DEVBOX_RELEASES="https://github.com/mixos-go/devbox-packages/releases/download/debian-latest"
 
 ARCH="$(uname -m)"
@@ -26,113 +25,146 @@ esac
 log()  { echo "[DevBox]" "$@"; }
 fail() { echo "[DevBox][ERROR]" "$@" 1>&2; exit 1; }
 
-mkdir -p "$DEVBOX_HOME"
-mkdir -p "$DEVBOX_SHARE"
+mkdir -p "$DEVBOX_HOME" "$DEVBOX_SHARE"
 
-# ── 1. Download Debian OS image ───────────────────────────────────────────────
+# ── 1. Download Debian rootfs ──────────────────────────────────────────────────
 if [ ! -f "$DEBIAN_IMG" ]; then
-    log "Downloading Debian rootfs for $ARCH..."
+    log "Downloading Debian rootfs ($ARCH)..."
     curl --fail --location --progress-bar \
-        --output "$DEBIAN_IMG.tmp" \
+        -o "$DEBIAN_IMG.tmp" \
         "$DEVBOX_RELEASES/debian-rootfs-$ARCH.img.gz" \
         || fail "Failed to download Debian rootfs."
-    log "Decompressing rootfs..."
+    log "Decompressing..."
     gunzip -c "$DEBIAN_IMG.tmp" > "$DEBIAN_IMG"
     rm -f "$DEBIAN_IMG.tmp"
-    log "Debian rootfs ready."
+    log "Rootfs ready."
 else
-    log "Debian rootfs already present, skipping."
+    log "Rootfs already present."
 fi
 
-# ── 2. Download kernel + initrd ───────────────────────────────────────────────
-if [ ! -f "$DEBIAN_KERNEL" ]; then
-    log "Downloading kernel for $ARCH..."
+# ── 2. Download UML kernel ─────────────────────────────────────────────────────
+if [ ! -f "$UML_BIN" ]; then
+    log "Downloading UML kernel ($ARCH)..."
     curl --fail --location --progress-bar \
-        --output "$DEBIAN_KERNEL" \
-        "$DEVBOX_RELEASES/vmlinuz-$ARCH" \
-        || fail "Failed to download kernel."
+        -o "$UML_BIN" "$DEVBOX_RELEASES/linux-uml-$ARCH" \
+        || fail "Failed to download UML kernel."
+    chmod +x "$UML_BIN"
+    log "UML kernel ready."
+else
+    log "UML kernel already present."
 fi
 
-if [ ! -f "$DEBIAN_INITRD" ]; then
-    log "Downloading initrd for $ARCH..."
-    curl --fail --location --progress-bar \
-        --output "$DEBIAN_INITRD" \
-        "$DEVBOX_RELEASES/initrd-$ARCH.img" \
-        || fail "Failed to download initrd."
+# ── 3. SSH key (passwordless login to VM via localhost:2222) ───────────────────
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+if [ ! -f "$SSH_KEY" ]; then
+    ssh-keygen -t ed25519 -f "$SSH_KEY" -N "" -C "devbox@android" 2>/dev/null
+    log "SSH key generated: $SSH_KEY"
 fi
 
-# ── 3. Verify crosvm ─────────────────────────────────────────────────────────
-if ! command -v crosvm &>/dev/null; then
-    fail "crosvm not found. Requires Android 13+ with virtualization support."
-fi
-
-# ── 4. Write devbox-start ─────────────────────────────────────────────────────
-# Uses --shared-dir to mount $PREFIX/share/devbox into VM at /mnt/devbox
-# via virtio-fs. This is how opensandbox + mobile-agent get into the VM
-# without being baked into the OS image.
-DEVBOX_START="$PREFIX/bin/devbox-start"
-cat > "$DEVBOX_START" << 'SCRIPT'
+# ── 4. Write devbox-start ──────────────────────────────────────────────────────
+cat > "$PREFIX/bin/devbox-start" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-# Start DevBox Debian VM via crosvm
+# Start DevBox Debian VM via Linux UML
+# UML runs as a normal Termux process — no KVM, no root, Android 11+ compatible.
+# slirp: userspace NAT, forwards host:2222 -> guest:22 (sshd).
 
 DEVBOX_HOME="$HOME/.devbox"
 DEVBOX_SHARE="$PREFIX/share/devbox"
-VSOCK_CID=3
+UML_BIN="$DEVBOX_HOME/linux-uml"
+SSH_KEY="$HOME/.ssh/devbox_id_ed25519"
+LOG="$DEVBOX_HOME/vm.log"
+PID_FILE="$DEVBOX_HOME/vm.pid"
 
-exec crosvm run \
-    --cpus 2 \
-    --mem 1024 \
-    --rwdisk "$DEVBOX_HOME/debian.img" \
-    --kernel "$DEVBOX_HOME/vmlinuz" \
-    --initrd "$DEVBOX_HOME/initrd.img" \
-    --params "root=/dev/vda rw console=ttyS0 quiet" \
-    --serial type=stdout,hardware=serial,num=1 \
-    --vsock cid="$VSOCK_CID" \
-    --shared-dir "$DEVBOX_SHARE:devbox:type=fs" \
-    "$@"
+mkdir -p "$DEVBOX_HOME"
+
+# Kill stale instance if running
+if [ -f "$PID_FILE" ]; then
+    OLD="$(cat "$PID_FILE" 2>/dev/null)"
+    if [ -n "$OLD" ] && kill -0 "$OLD" 2>/dev/null; then
+        log "Stopping stale VM (PID $OLD)..."
+        kill "$OLD" 2>/dev/null || true
+        sleep 1
+    fi
+    rm -f "$PID_FILE"
+fi
+
+export LD_LIBRARY_PATH="$PREFIX/lib:$LD_LIBRARY_PATH"
+export TMPDIR="$PREFIX/tmp"
+
+log() { echo "[devbox-start]" "$@"; }
+
+log "Starting UML VM..."
+nohup "$UML_BIN" \
+    mem=1024M \
+    ubd0="$DEVBOX_HOME/debian.img" \
+    eth0=slirp,,tcp:2222:22 \
+    root=/dev/ubda rw quiet \
+    con0=fd:0,fd:1 con=pts \
+    >> "$LOG" 2>&1 &
+
+VM_PID=$!
+echo "$VM_PID" > "$PID_FILE"
+log "UML started (PID $VM_PID), waiting for sshd on port 2222..."
+
+# Wait up to 60s for sshd (UML boots in ~5-15s on modern Android)
+for i in $(seq 1 30); do
+    sleep 2
+    if bash -c "echo >/dev/tcp/127.0.0.1/2222" 2>/dev/null; then
+        log "VM ready! (${i}x2s elapsed)"
+        # Mount devbox share via UML hostfs (built-in filesystem bridge)
+        ssh -i "$SSH_KEY" \
+            -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -o ConnectTimeout=3 -p 2222 root@localhost \
+            "mount -t hostfs none /mnt/devbox -o '$DEVBOX_SHARE' 2>/dev/null || true" \
+            2>/dev/null || true
+        exit 0
+    fi
+    if ! kill -0 "$VM_PID" 2>/dev/null; then
+        log "ERROR: VM process died. Check: $LOG"
+        exit 1
+    fi
+done
+
+log "WARNING: sshd not responding after 60s. Check: $LOG"
+exit 0
 SCRIPT
-chmod 755 "$DEVBOX_START"
+chmod 755 "$PREFIX/bin/devbox-start"
 
-# ── 5. Write devbox-shell ─────────────────────────────────────────────────────
-DEVBOX_SHELL="$PREFIX/bin/devbox-shell"
-cat > "$DEVBOX_SHELL" << 'SCRIPT'
+# ── 5. Write devbox-shell ──────────────────────────────────────────────────────
+cat > "$PREFIX/bin/devbox-shell" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-# Open shell into running DevBox Debian VM (SSH over vsock)
-
-VSOCK_CID=3
+# Open shell into DevBox VM (SSH over localhost:2222)
 exec ssh \
-    -o "ProxyCommand=socat - VSOCK-CONNECT:${VSOCK_CID}:22" \
+    -i "$HOME/.ssh/devbox_id_ed25519" \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    root@localhost "$@"
+    -o LogLevel=ERROR \
+    -o ConnectTimeout=5 \
+    -p 2222 root@localhost "$@"
 SCRIPT
-chmod 755 "$DEVBOX_SHELL"
+chmod 755 "$PREFIX/bin/devbox-shell"
 
-log "DevBox setup complete!"
-log "  Start VM:   devbox-start"
-log "  Open shell: devbox-shell"
-log "  Shared dir: $DEVBOX_SHARE → /mnt/devbox (inside VM)"
-
-# ── 6. Write devbox-forward ───────────────────────────────────────────────────
-# Forwards Debian VM ports to localhost so Android apps can reach them.
-# MobileAgent server: localhost:4201 → vsock:3:4201 (inside Debian)
-DEVBOX_FORWARD="$PREFIX/bin/devbox-forward"
-cat > "$DEVBOX_FORWARD" << 'SCRIPT'
+# ── 6. Write devbox-forward ────────────────────────────────────────────────────
+cat > "$PREFIX/bin/devbox-forward" << 'SCRIPT'
 #!/data/data/com.termux/files/usr/bin/bash
-# Port-forward: localhost:PORT → Debian VM vsock:3:PORT
+# Forward localhost:PORT to VM:PORT via SSH tunnel
 # Usage: devbox-forward [port]   (default: 4201 for MobileAgent)
-
-VSOCK_CID=3
 PORT="${1:-4201}"
-
-log() { echo "[devbox-forward]" "$@"; }
-log "Forwarding localhost:${PORT} → vsock:${VSOCK_CID}:${PORT}"
-
-# socat listens on TCP localhost:PORT and connects to vsock
-exec socat \
-    TCP-LISTEN:${PORT},bind=127.0.0.1,reuseaddr,fork \
-    VSOCK-CONNECT:${VSOCK_CID}:${PORT}
+exec ssh \
+    -i "$HOME/.ssh/devbox_id_ed25519" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -N \
+    -L "127.0.0.1:${PORT}:127.0.0.1:${PORT}" \
+    -p 2222 root@localhost
 SCRIPT
-chmod 755 "$DEVBOX_FORWARD"
+chmod 755 "$PREFIX/bin/devbox-forward"
 
-log "  Port-forward: devbox-forward [port]  (default 4201 for MobileAgent)"
+# ── Done ────────────────────────────────────────────────────────────────────────
+log ""
+log "DevBox setup complete!"
+log "  devbox-start          — launch VM"
+log "  devbox-shell          — open shell in VM"
+log "  devbox-forward [port] — forward port from VM (default: 4201)"
+log "  SSH key: $SSH_KEY"
+log "  VM log:  $DEVBOX_HOME/vm.log"

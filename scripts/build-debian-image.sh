@@ -1,31 +1,28 @@
 #!/usr/bin/env bash
-# build-debian-image.sh — Build Debian rootfs + kernel for DevBox crosvm VM
+# build-debian-image.sh — Build Debian rootfs + UML kernel for DevBox
 #
-# Produces (in ./output/):
-#   debian-rootfs-aarch64.img.gz   — Debian bookworm root filesystem image
-#   debian-rootfs-x86_64.img.gz    — Same for x86_64
-#   vmlinuz-aarch64                — Kernel for aarch64
-#   vmlinuz-x86_64                 — Kernel for x86_64
-#   initrd-aarch64.img             — Initrd for aarch64
-#   initrd-x86_64.img              — Initrd for x86_64
+# DevBox uses Linux UML (User Mode Linux) — runs as a normal Termux process,
+# no /dev/kvm, no root, works on Android 11+ (and any Android).
 #
-# Requirements (run on a Debian/Ubuntu host or in CI):
-#   sudo apt install debootstrap qemu-user-static binfmt-support
-#                    libguestfs-tools linux-image-arm64 linux-image-amd64
+# Output in ./output/:
+#   debian-rootfs-{arch}.img.gz  — Debian bookworm rootfs
+#   linux-uml-{arch}             — UML kernel binary (ELF, runs as process)
 #
-# Upload output/ to GitHub Releases as bootstrap-<version> so DevBox can
-# download at first launch via devbox-second-stage.sh.
+# Requirements:
+#   sudo apt install debootstrap qemu-user-static binfmt-support \
+#                    libguestfs-tools qemu-utils \
+#                    build-essential flex bison libssl-dev libelf-dev bc \
+#                    gcc-aarch64-linux-gnu
 #
-# Usage:
-#   ./scripts/build-debian-image.sh [aarch64|x86_64|all]
-#   Default: all
+# Usage:  ./scripts/build-debian-image.sh [aarch64|x86_64|all]
 
 set -euo pipefail
 
 ARCH="${1:-all}"
 OUTPUT_DIR="$(pwd)/output"
-ROOTFS_SIZE="4G"          # raw image size (gets sparse-compressed with gzip)
+ROOTFS_SIZE="4G"
 DEBIAN_SUITE="bookworm"
+UML_KERNEL_VERSION="${UML_KERNEL_VERSION:-6.6.30}"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -38,15 +35,14 @@ check_deps() {
         command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
-        die "Missing: ${missing[*]}. Install with: sudo apt install debootstrap libguestfs-tools qemu-utils"
+        die "Missing: ${missing[*]}. Install: sudo apt install debootstrap libguestfs-tools qemu-utils"
     fi
 }
 
-# ── Build rootfs for one arch ──────────────────────────────────────────────────
+# ── Build Debian rootfs ────────────────────────────────────────────────────────
 build_rootfs() {
-    local arch="$1"          # aarch64 | x86_64
-    local deb_arch           # Debian arch name
-    local qemu_arch          # qemu-user-static binary name
+    local arch="$1"
+    local deb_arch qemu_arch
 
     case "$arch" in
         aarch64) deb_arch="arm64";  qemu_arch="aarch64" ;;
@@ -59,16 +55,12 @@ build_rootfs() {
 
     log "Building Debian ${DEBIAN_SUITE} rootfs for ${arch}..."
 
-    # ── 1. Create empty raw image ──────────────────────────────────────────────
     qemu-img create -f raw "$raw_img" "$ROOTFS_SIZE"
     mkfs.ext4 -F -L "debian-devbox" "$raw_img"
 
-    # ── 2. Mount and debootstrap ───────────────────────────────────────────────
-    local mnt
-    mnt=$(mktemp -d)
+    local mnt; mnt=$(mktemp -d)
     sudo mount -o loop "$raw_img" "$mnt"
 
-    # Copy qemu-user-static for cross-arch debootstrap
     if [[ -n "$qemu_arch" ]]; then
         sudo cp "/usr/bin/qemu-${qemu_arch}-static" "$mnt/usr/bin/" 2>/dev/null || true
     fi
@@ -77,17 +69,12 @@ build_rootfs() {
     sudo debootstrap \
         --arch="$deb_arch" \
         --include="openssh-server,curl,socat,sudo,bash,zsh,coreutils,util-linux,net-tools,iproute2,procps,less,vim-tiny,python3,python3-pip,git,wget,ca-certificates" \
-        "$DEBIAN_SUITE" \
-        "$mnt" \
-        "https://deb.debian.org/debian"
+        "$DEBIAN_SUITE" "$mnt" "https://deb.debian.org/debian"
 
-    # ── 3. Configure the rootfs ────────────────────────────────────────────────
     log "Configuring rootfs..."
-
-    # Hostname
     echo "devbox" | sudo tee "$mnt/etc/hostname" >/dev/null
 
-    # Network (virtio eth0 via DHCP)
+    # UML uses slirp for networking — eth0 via DHCP works out of the box
     sudo tee "$mnt/etc/network/interfaces" >/dev/null <<'NET'
 auto lo
 iface lo inet loopback
@@ -96,141 +83,141 @@ auto eth0
 iface eth0 inet dhcp
 NET
 
-    # Root password (devbox) + enable root SSH
     sudo chroot "$mnt" /bin/bash -c "echo 'root:devbox' | chpasswd"
-    sudo sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' "$mnt/etc/ssh/sshd_config"
+    sudo sed -i 's/#*PermitRootLogin.*/PermitRootLogin yes/'              "$mnt/etc/ssh/sshd_config"
     sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' "$mnt/etc/ssh/sshd_config"
-
-    # Serial console for crosvm
-    sudo chroot "$mnt" /bin/bash -c "systemctl enable serial-getty@ttyS0.service" 2>/dev/null || true
-
-    # Enable SSH on boot
     sudo chroot "$mnt" /bin/bash -c "systemctl enable ssh" 2>/dev/null || true
 
-    # ── Install starship prompt ────────────────────────────────────────────────
     log "Installing starship prompt..."
-    # Download the starship install script and run it inside the chroot
     sudo chroot "$mnt" /bin/bash -c "
         curl -sS https://starship.rs/install.sh -o /tmp/starship-install.sh
         chmod +x /tmp/starship-install.sh
         /tmp/starship-install.sh --yes --bin-dir /usr/local/bin
         rm -f /tmp/starship-install.sh
-    " 2>/dev/null || log "WARNING: starship install failed — run manually: curl -sS https://starship.rs/install.sh | sh"
+    " 2>/dev/null || log "WARNING: starship install failed — run manually"
 
-    # ── Configure zsh as default shell for root ────────────────────────────────
-    log "Configuring zsh + starship for root..."
     sudo chroot "$mnt" /bin/bash -c "chsh -s /bin/zsh root" 2>/dev/null || true
 
-    # .zshrc — starship init + sensible defaults
-    sudo tee "$mnt/root/.zshrc" >/dev/null << 'ZSHRC'
-# DevBox zsh config
+    sudo tee "$mnt/root/.zshrc" >/dev/null <<'ZSHRC'
 export TERM="xterm-256color"
 export LANG="en_US.UTF-8"
 export EDITOR="vim"
-
-# History
 HISTFILE=~/.zsh_history
 HISTSIZE=10000
 SAVEHIST=10000
-setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE
-
-# Auto-cd, extended glob, no beep
-setopt AUTO_CD EXTENDED_GLOB NO_BEEP
-
-# Completion
+setopt SHARE_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE AUTO_CD EXTENDED_GLOB NO_BEEP
 autoload -Uz compinit && compinit
-
-# Key bindings (emacs style)
 bindkey -e
 bindkey '^[[A' history-search-backward
 bindkey '^[[B' history-search-forward
-
-# Aliases
 alias ls='ls --color=auto'
 alias ll='ls -lah'
 alias la='ls -A'
 alias grep='grep --color=auto'
-
-# Starship prompt
 eval "$(starship init zsh)"
 ZSHRC
 
-    # ── virtio-fs auto-mount for DevBox shared dir ─────────────────────────
-    # crosvm mounts $PREFIX/share/devbox as virtio-fs tag "devbox"
-    # This makes opensandbox + mobile-agent available at /mnt/devbox/
-    # without being baked into the image — update via bootstrap zip only.
+    # Shared dir — UML hostfs mounts host $PREFIX/share/devbox -> /mnt/devbox
+    # (mounted by devbox-start after VM boots, via SSH)
     sudo mkdir -p "$mnt/mnt/devbox"
 
-    # /etc/fstab entry — mounts at boot
-    echo "devbox  /mnt/devbox  virtiofs  defaults,nofail  0  0" \
-        | sudo tee -a "$mnt/etc/fstab" >/dev/null
-
-    # systemd mount unit for early boot (fstab alone is sometimes too late)
-    sudo tee "$mnt/etc/systemd/system/mnt-devbox.mount" >/dev/null << 'UNIT'
-[Unit]
-Description=DevBox virtio-fs shared directory
-DefaultDependencies=no
-After=local-fs-pre.target
-Before=local-fs.target
-
-[Mount]
-What=devbox
-Where=/mnt/devbox
-Type=virtiofs
-Options=defaults
-
-[Install]
-WantedBy=local-fs.target
-UNIT
-    sudo chroot "$mnt" /bin/bash -c "systemctl enable mnt-devbox.mount" 2>/dev/null || true
-
-    # ── Install kernel + generate initrd inside rootfs ───────────────────────
-    log "Installing kernel and generating initrd (${arch})..."
-    sudo chroot "$mnt" /bin/bash -c "
-        apt-get install -y --no-install-recommends linux-image-${deb_arch} initramfs-tools 2>&1
-    " || true
-
-    # Copy vmlinuz + initrd out of rootfs
-    local kernel_ver
-    kernel_ver=$(ls "$mnt/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 | sed "s|.*/vmlinuz-||")
-    if [[ -n "$kernel_ver" ]]; then
-        cp "$mnt/boot/vmlinuz-${kernel_ver}" "$OUTPUT_DIR/vmlinuz-${arch}"
-        log "Kernel: $OUTPUT_DIR/vmlinuz-${arch} (${kernel_ver})"
-        if [[ -f "$mnt/boot/initrd.img-${kernel_ver}" ]]; then
-            cp "$mnt/boot/initrd.img-${kernel_ver}" "$OUTPUT_DIR/initrd-${arch}.img"
-            log "Initrd: $OUTPUT_DIR/initrd-${arch}.img"
-        fi
-    fi
-
-    # Remove qemu static binary from rootfs
     [[ -n "$qemu_arch" ]] && sudo rm -f "$mnt/usr/bin/qemu-${qemu_arch}-static"
+    sudo umount "$mnt"; rmdir "$mnt"
 
-    sudo umount "$mnt"
-    rmdir "$mnt"
-
-    # ── 4. Compress ───────────────────────────────────────────────────────────
     log "Compressing rootfs (${arch})..."
     gzip -9 -c "$raw_img" > "$gz_img"
     rm -f "$raw_img"
     log "Done: $gz_img ($(du -sh "$gz_img" | cut -f1))"
 }
 
+# ── Build UML kernel ────────────────────────────────────────────────────────────
+#
+# UML = User Mode Linux. Compiled with ARCH=um, produces a regular ELF binary
+# that boots Linux entirely in userspace via ptrace. No /dev/kvm, no root.
+#
+# Works on Android 11+ as a normal Termux process.
+#
+# slirp  = built-in userspace NAT networking (no tun/tap, no root needed)
+# hostfs = mount host directories inside UML (for devbox shared dir)
+# ubd    = UML block device driver (for .img disk files)
+# ──────────────────────────────────────────────────────────────────────────────
+build_uml_kernel() {
+    local target_arch="$1"
 
+    log "Building UML kernel ${UML_KERNEL_VERSION} for ${target_arch}..."
+
+    local major="${UML_KERNEL_VERSION%%.*}"
+    local tarball="/tmp/linux-${UML_KERNEL_VERSION}.tar.xz"
+    local src_dir="/tmp/linux-${UML_KERNEL_VERSION}"
+
+    # Download source once (reused between arch builds)
+    if [[ ! -d "$src_dir" ]]; then
+        if [[ ! -f "$tarball" ]]; then
+            log "Downloading Linux ${UML_KERNEL_VERSION} source..."
+            curl -L --fail --progress-bar \
+                "https://cdn.kernel.org/pub/linux/kernel/v${major}.x/linux-${UML_KERNEL_VERSION}.tar.xz" \
+                -o "$tarball"
+        fi
+        log "Extracting..."
+        tar -xf "$tarball" -C /tmp
+    fi
+
+    local build_dir="/tmp/linux-uml-${target_arch}"
+    rm -rf "$build_dir"; mkdir -p "$build_dir"
+
+    # Cross-compile aarch64 UML when running on x86_64 CI
+    local cross=""
+    if [[ "$target_arch" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
+        cross="CROSS_COMPILE=aarch64-linux-gnu-"
+        log "Cross-compiling aarch64 UML on $(uname -m)..."
+    fi
+
+    local J="-j$(nproc)"
+
+    log "Configuring (ARCH=um)..."
+    # shellcheck disable=SC2086
+    make -C "$src_dir" O="$build_dir" ARCH=um $cross defconfig $J
+
+    # Essential UML features
+    cat >> "$build_dir/.config" <<'KCONFIG'
+CONFIG_HOSTFS=y
+CONFIG_UML_NET_SLIRP=y
+CONFIG_BLK_DEV_UBD=y
+KCONFIG
+    # shellcheck disable=SC2086
+    make -C "$src_dir" O="$build_dir" ARCH=um $cross olddefconfig
+
+    log "Compiling UML kernel (~5 min)..."
+    # shellcheck disable=SC2086
+    make -C "$src_dir" O="$build_dir" ARCH=um $cross $J
+
+    # UML build puts the binary at build_dir/linux
+    local uml_bin
+    uml_bin=$(find "$build_dir" -maxdepth 1 \( -name "linux" -o -name "vmlinux" \) 2>/dev/null | head -1)
+    [[ -z "$uml_bin" ]] && die "UML binary not found after build for ${target_arch}"
+
+    local dest="$OUTPUT_DIR/linux-uml-${target_arch}"
+    cp "$uml_bin" "$dest"
+    chmod +x "$dest"
+    log "UML kernel ready: linux-uml-${target_arch} ($(du -sh "$dest" | cut -f1))"
+}
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 check_deps
 
+build_arch() {
+    local arch="$1"
+    build_rootfs "$arch"
+    build_uml_kernel "$arch"
+}
+
 case "$ARCH" in
-    aarch64)
-        build_rootfs aarch64
-        ;;
-    x86_64)
-        build_rootfs x86_64
-        ;;
+    aarch64) build_arch aarch64 ;;
+    x86_64)  build_arch x86_64  ;;
     all)
-        build_rootfs aarch64
-        build_rootfs x86_64
+        build_arch aarch64
+        build_arch x86_64
         ;;
     *)
         die "Usage: $0 [aarch64|x86_64|all]"
@@ -238,17 +225,7 @@ case "$ARCH" in
 esac
 
 log ""
-log "Output files:"
+log "=== Output files ==="
 ls -lh "$OUTPUT_DIR"/
 log ""
-log "Upload these to GitHub Releases (mixos-go/devbox-packages) as:"
-log "  bootstrap-<version> release tag"
-log ""
-log "Files expected by devbox-second-stage.sh:"
-log "  debian-rootfs-aarch64.img.gz"
-log "  debian-rootfs-x86_64.img.gz"
-log "  vmlinuz-aarch64"
-log "  vmlinuz-x86_64"
-log "  initrd-aarch64.img"
-log "  initrd-x86_64.img"
-
+log "Upload all to: github.com/mixos-go/devbox-packages — release tag: debian-latest"
