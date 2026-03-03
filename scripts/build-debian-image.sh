@@ -212,16 +212,26 @@ extract_kernel() {
     local tmp_dir
     tmp_dir=$(mktemp -d)
 
-    # Download linux-image .deb from Debian
+    # Download linux-image .deb directly from Debian mirror (works on Ubuntu runners)
     local pkg_name="linux-image-${deb_arch}"
+    local debian_mirror="https://deb.debian.org/debian"
 
-    # Try apt-get download (needs package list)
-    if apt-get download "${pkg_name}" -t "$DEBIAN_SUITE" 2>/dev/null; then
-        local deb_file
-        deb_file=$(ls ${pkg_name}*.deb 2>/dev/null | head -1)
-        if [[ -n "$deb_file" ]]; then
-            dpkg-deb -x "$deb_file" "$tmp_dir"
-            rm -f "$deb_file"
+    log "Fetching package list for ${deb_arch} from Debian ${DEBIAN_SUITE}..."
+    local pkg_list_url="${debian_mirror}/dists/${DEBIAN_SUITE}/main/binary-${deb_arch}/Packages.gz"
+    local pkg_list="${tmp_dir}/Packages"
+
+    if curl --fail --silent --location "${pkg_list_url}" | gunzip -c > "${pkg_list}" 2>/dev/null; then
+        local deb_path
+        deb_path=$(grep -A 20 "^Package: ${pkg_name}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
+
+        if [[ -n "$deb_path" ]]; then
+            local deb_url="${debian_mirror}/${deb_path}"
+            local deb_file="${tmp_dir}/${pkg_name}.deb"
+            log "Downloading ${deb_url}..."
+            if curl --fail --silent --location -o "${deb_file}" "${deb_url}"; then
+                dpkg-deb -x "${deb_file}" "${tmp_dir}"
+                rm -f "${deb_file}"
+            fi
         fi
     fi
 
@@ -289,3 +299,4 @@ log "  vmlinuz-aarch64"
 log "  vmlinuz-x86_64"
 log "  initrd-aarch64.img"
 log "  initrd-x86_64.img"
+
