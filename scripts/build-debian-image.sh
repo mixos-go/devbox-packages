@@ -184,6 +184,24 @@ WantedBy=local-fs.target
 UNIT
     sudo chroot "$mnt" /bin/bash -c "systemctl enable mnt-devbox.mount" 2>/dev/null || true
 
+    # ── Install kernel + generate initrd inside rootfs ───────────────────────
+    log "Installing kernel and generating initrd (${arch})..."
+    sudo chroot "$mnt" /bin/bash -c "
+        apt-get install -y --no-install-recommends linux-image-${deb_arch} initramfs-tools 2>&1
+    " || true
+
+    # Copy vmlinuz + initrd out of rootfs
+    local kernel_ver
+    kernel_ver=$(ls "$mnt/boot/vmlinuz-"* 2>/dev/null | sort -V | tail -1 | sed "s|.*/vmlinuz-||")
+    if [[ -n "$kernel_ver" ]]; then
+        cp "$mnt/boot/vmlinuz-${kernel_ver}" "$OUTPUT_DIR/vmlinuz-${arch}"
+        log "Kernel: $OUTPUT_DIR/vmlinuz-${arch} (${kernel_ver})"
+        if [[ -f "$mnt/boot/initrd.img-${kernel_ver}" ]]; then
+            cp "$mnt/boot/initrd.img-${kernel_ver}" "$OUTPUT_DIR/initrd-${arch}.img"
+            log "Initrd: $OUTPUT_DIR/initrd-${arch}.img"
+        fi
+    fi
+
     # Remove qemu static binary from rootfs
     [[ -n "$qemu_arch" ]] && sudo rm -f "$mnt/usr/bin/qemu-${qemu_arch}-static"
 
@@ -197,75 +215,7 @@ UNIT
     log "Done: $gz_img ($(du -sh "$gz_img" | cut -f1))"
 }
 
-# ── Extract kernel + initrd from Debian package ───────────────────────────────
-extract_kernel() {
-    local arch="$1"
-    local deb_arch
 
-    case "$arch" in
-        aarch64) deb_arch="arm64" ;;
-        x86_64)  deb_arch="amd64" ;;
-    esac
-
-    log "Extracting kernel for ${arch}..."
-
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-
-    # Download linux-image .deb directly from Debian mirror (works on Ubuntu runners)
-    local pkg_name="linux-image-${deb_arch}"
-    local debian_mirror="https://deb.debian.org/debian"
-
-    log "Fetching package list for ${deb_arch} from Debian ${DEBIAN_SUITE}..."
-    local pkg_list_url="${debian_mirror}/dists/${DEBIAN_SUITE}/main/binary-${deb_arch}/Packages.gz"
-    local pkg_list="${tmp_dir}/Packages"
-
-    if curl --fail --silent --location "${pkg_list_url}" | gunzip -c > "${pkg_list}" 2>/dev/null; then
-        # linux-image-arm64/amd64 is a meta package - find the actual versioned kernel package
-        local deb_path
-        deb_path=$(grep -A 20 "^Package: linux-image-[0-9].*-${deb_arch}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
-
-        # Fallback to meta package if versioned not found
-        if [[ -z "$deb_path" ]]; then
-            deb_path=$(grep -A 20 "^Package: ${pkg_name}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
-        fi
-
-        if [[ -n "$deb_path" ]]; then
-            local deb_url="${debian_mirror}/${deb_path}"
-            local deb_file="${tmp_dir}/${pkg_name}.deb"
-            log "Downloading ${deb_url}..."
-            if curl --fail --silent --location -o "${deb_file}" "${deb_url}"; then
-                dpkg-deb -x "${deb_file}" "${tmp_dir}"
-                rm -f "${deb_file}"
-            fi
-        fi
-    fi
-
-    # Find vmlinuz and initrd
-    local vmlinuz
-    vmlinuz=$(find "$tmp_dir" -name "vmlinuz*" | head -1)
-    local initrd
-    initrd=$(find "$tmp_dir" -name "initrd*" | head -1)
-
-    if [[ -n "$vmlinuz" ]]; then
-        cp "$vmlinuz" "$OUTPUT_DIR/vmlinuz-${arch}"
-        log "Kernel: $OUTPUT_DIR/vmlinuz-${arch}"
-    else
-        log "WARNING: Could not extract vmlinuz for ${arch}. Provide manually."
-        # Create placeholder so devbox-second-stage.sh can detect missing
-        echo "PLACEHOLDER - replace with real kernel" > "$OUTPUT_DIR/vmlinuz-${arch}"
-    fi
-
-    if [[ -n "$initrd" ]]; then
-        cp "$initrd" "$OUTPUT_DIR/initrd-${arch}.img"
-        log "Initrd: $OUTPUT_DIR/initrd-${arch}.img"
-    else
-        log "WARNING: Could not extract initrd for ${arch}. Provide manually."
-        echo "PLACEHOLDER - replace with real initrd" > "$OUTPUT_DIR/initrd-${arch}.img"
-    fi
-
-    rm -rf "$tmp_dir"
-}
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
@@ -274,17 +224,13 @@ check_deps
 case "$ARCH" in
     aarch64)
         build_rootfs aarch64
-        extract_kernel aarch64
         ;;
     x86_64)
         build_rootfs x86_64
-        extract_kernel x86_64
         ;;
     all)
         build_rootfs aarch64
-        extract_kernel aarch64
         build_rootfs x86_64
-        extract_kernel x86_64
         ;;
     *)
         die "Usage: $0 [aarch64|x86_64|all]"
