@@ -347,7 +347,7 @@ jobs:
   upload-test:
     permissions:
       contents: read
-    if:  && github.ref != 'refs/heads/master'
+    if:  && github.ref != 'refs/heads/main'
     needs: build
     runs-on: ubuntu-slim
     steps:
