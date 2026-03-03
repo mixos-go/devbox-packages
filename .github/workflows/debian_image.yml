@@ -81,7 +81,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete debian-latest --yes 2>/dev/null || true
           git push origin :refs/tags/debian-latest 2>/dev/null || true
 
       - name: Create rolling debian-latest release
