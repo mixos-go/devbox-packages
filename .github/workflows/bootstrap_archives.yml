@@ -1,0 +1,94 @@
+name: Generate bootstrap archives
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [aarch64, arm, i686, x86_64]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            curl jq zip xz-utils
+
+      - name: Create bootstrap archive (${{ matrix.arch }})
+        run: |
+          chmod +x scripts/generate-bootstraps.sh
+          ./scripts/generate-bootstraps.sh --architectures ${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ matrix.arch }}
+          path: "*.zip"
+          retention-days: 3
+
+  publish:
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download bootstrap zips
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: ./
+
+      - name: List files
+        run: ls -lh *.zip
+
+      # Rolling "bootstrap-latest" — build.gradle selalu pakai ini,
+      # tidak perlu update version string setiap kali bootstrap di-rebuild.
+      - name: Delete old bootstrap-latest release + tag (if exists)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete bootstrap-latest --yes 2>/dev/null || true
+          git push origin :refs/tags/bootstrap-latest 2>/dev/null || true
+
+      - name: Create rolling bootstrap-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUILT_AT="$(date '+%Y-%m-%d %H:%M UTC')"
+          gh release create bootstrap-latest \
+            --title "Bootstrap archives (latest) — ${BUILT_AT}" \
+            --notes "Rolling release — always the latest Termux bootstrap for DevBox.
+
+          **Built:** ${BUILT_AT}
+          **Commit:** ${{ github.sha }}
+
+          Downloaded by Gradle at APK build time via \`downloadBootstraps\` task.
+          No need to update \`build.gradle\` — just rebuild the APK." \
+            --prerelease
+
+          for f in *.zip; do
+            gh release upload bootstrap-latest "$f" --clobber
+          done

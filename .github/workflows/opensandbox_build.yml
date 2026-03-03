@@ -1,0 +1,114 @@
+name: Build OpenSandbox Go components
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'devbox/opensandbox/components/**'
+      - '.github/workflows/opensandbox_build.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - component: execd
+            path: devbox/opensandbox/components/execd
+            binary: execd
+          - component: egress
+            path: devbox/opensandbox/components/egress
+            binary: egress
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.path }}/go.mod
+          cache-dependency-path: ${{ matrix.path }}/go.sum
+
+      - name: Build ${{ matrix.component }} (arm64)
+        working-directory: ${{ matrix.path }}
+        run: |
+          chmod +x build.sh
+          GOARCH=arm64 GOOS=linux CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w" \
+            -o ../../output/${{ matrix.binary }}-arm64 .
+
+      - name: Build ${{ matrix.component }} (amd64)
+        working-directory: ${{ matrix.path }}
+        run: |
+          GOARCH=amd64 GOOS=linux CGO_ENABLED=0 \
+            go build -trimpath -ldflags="-s -w" \
+            -o ../../output/${{ matrix.binary }}-amd64 .
+
+      - name: Run tests
+        working-directory: ${{ matrix.path }}
+        run: go test ./... -v -timeout 60s
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensandbox-${{ matrix.component }}-${{ github.sha }}
+          path: devbox/opensandbox/output/
+          retention-days: 7
+
+  publish:
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: ./output
+
+      - name: Create release tag
+        id: tag
+        run: |
+          TAG="opensandbox-$(date '+%Y.%m.%d')"
+          EXISTING=$(git tag -l "${TAG}-r*" | sort -V | tail -1)
+          if [ -n "$EXISTING" ]; then
+            REV=$(echo "$EXISTING" | grep -oP 'r\K[0-9]+')
+            TAG="${TAG}-r$((REV + 1))"
+          else
+            TAG="${TAG}-r1"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Publish binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --title "OpenSandbox binaries ${{ steps.tag.outputs.tag }}" \
+            --notes "Pre-built execd + egress binaries for DevBox Debian VM.
+
+          These are placed at \`/opt/opensandbox/\` inside the Debian rootfs
+          by \`devbox/opensandbox/install.sh\` during second-stage bootstrap."
+
+          for f in output/*; do
+            gh release upload "${{ steps.tag.outputs.tag }}" "$f"
+          done

@@ -1,0 +1,109 @@
+name: Build Debian VM Image
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'scripts/build-debian-image.sh'
+      - '.github/workflows/debian_image.yml'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Architecture (aarch64 | x86_64 | all)"
+        required: false
+        default: "all"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [aarch64, x86_64]
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap qemu-user-static binfmt-support \
+            libguestfs-tools qemu-utils \
+            linux-image-amd64 linux-image-arm64
+
+      - name: Build Debian rootfs + kernel (${{ matrix.arch }})
+        run: |
+          chmod +x scripts/build-debian-image.sh
+          sudo ./scripts/build-debian-image.sh ${{ matrix.arch }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-image-${{ matrix.arch }}
+          path: output/
+          retention-days: 3
+
+  publish:
+    permissions:
+      contents: write
+    needs: build
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: ./output
+
+      - name: List output files
+        run: ls -lh output/
+
+      # Rolling "debian-latest" tag — always points to the most recent build.
+      # devbox-second-stage.sh downloads from this tag so it always gets fresh images
+      # without needing to update any config in the app.
+      - name: Delete old debian-latest release + tag (if exists)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete debian-latest --yes 2>/dev/null || true
+          git push origin :refs/tags/debian-latest 2>/dev/null || true
+
+      - name: Create rolling debian-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUILT_AT="$(date '+%Y-%m-%d %H:%M UTC')"
+          gh release create debian-latest \
+            --title "Debian VM image (latest) — ${BUILT_AT}" \
+            --notes "Rolling release — always the latest Debian bookworm rootfs + kernel for DevBox crosvm VM.
+
+          **Built:** ${BUILT_AT}
+          **Commit:** ${{ github.sha }}
+
+          Files downloaded by \`devbox-second-stage.sh\` on first DevBox launch:
+          - \`debian-rootfs-aarch64.img.gz\` / \`debian-rootfs-x86_64.img.gz\`
+          - \`vmlinuz-aarch64\` / \`vmlinuz-x86_64\`
+          - \`initrd-aarch64.img\` / \`initrd-x86_64.img\`
+
+          > Do not delete this release — DevBox downloads from this tag." \
+            --prerelease
+
+          for f in output/*; do
+            gh release upload debian-latest "$f" --clobber
+          done

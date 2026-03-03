@@ -1,0 +1,31 @@
+# DevBox OpenSandbox configuration
+# Installed to ~/.sandbox.toml inside the Debian VM by install.sh
+
+[server]
+host = "127.0.0.1"
+port = 8080
+log_level = "INFO"
+# api_key = "devbox-secret"  # uncomment to enable auth
+
+[runtime]
+# "crosvm" = CrosvmSandboxService — subprocess isolation inside Debian VM
+# No Docker/K8s needed. Full Linux process isolation available.
+type = "crosvm"
+
+[egress]
+image = ""
+
+[storage]
+# Paths the sandbox processes are allowed to access inside the Debian VM
+allowed_host_paths = ["/home/root", "/tmp", "/workspace"]
+
+[docker]
+network_mode = "bridge"
+drop_capabilities = []
+no_new_privileges = true
+apparmor_profile = ""
+pids_limit = 512
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
