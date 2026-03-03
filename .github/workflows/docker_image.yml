@@ -3,7 +3,7 @@ name: Docker image
 on:
   push:
     branches:
-    - master
+    - main
     paths:
     - 'scripts/Dockerfile'
     - 'scripts/properties.sh'
@@ -64,7 +64,7 @@ jobs:
         docker build --tag mixos-go/package-builder-cgct:latest --file scripts/Dockerfile.cgct scripts/
         docker tag mixos-go/package-builder-cgct:latest ghcr.io/mixos-go/package-builder-cgct:latest
     - name: Login to GHCR
-      if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
 
       uses: docker/login-action@v3
       with:
@@ -72,13 +72,13 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     - name: Login to Docker Hub
-      if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
       uses: docker/login-action@v3
       with:
         username: ${{ github.repository_owner }}
         password: ${{ secrets.DOCKER_HUB_TOKEN }}
     - name: Push
-      if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
+      if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' &&  && steps.skip-build.outputs.skip-build != 'true'
       run: |
         # ghcr.io seem to be unstable sometimes. It may suddenly drop connection
         # during docker push when some layers are already uploaded. The workaround
