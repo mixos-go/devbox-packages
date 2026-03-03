@@ -18,7 +18,7 @@ on:
   workflow_dispatch:
     inputs:
       packages:
-        description: "A space-separated names of packages selected for rebuilding"
+        description: "A space-separated name of packages selected for rebuilding"
         required: true
 
 permissions: {} # none
