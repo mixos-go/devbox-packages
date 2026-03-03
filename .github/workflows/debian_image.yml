@@ -39,7 +39,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             debootstrap qemu-user-static binfmt-support \
             libguestfs-tools qemu-utils \
-            linux-image-amd64 linux-image-arm64
+            linux-image-generic
 
       - name: Build Debian rootfs + kernel (${{ matrix.arch }})
         run: |
