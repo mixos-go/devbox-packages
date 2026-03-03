@@ -221,8 +221,14 @@ extract_kernel() {
     local pkg_list="${tmp_dir}/Packages"
 
     if curl --fail --silent --location "${pkg_list_url}" | gunzip -c > "${pkg_list}" 2>/dev/null; then
+        # linux-image-arm64/amd64 is a meta package - find the actual versioned kernel package
         local deb_path
-        deb_path=$(grep -A 20 "^Package: ${pkg_name}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
+        deb_path=$(grep -A 20 "^Package: linux-image-[0-9].*-${deb_arch}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
+
+        # Fallback to meta package if versioned not found
+        if [[ -z "$deb_path" ]]; then
+            deb_path=$(grep -A 20 "^Package: ${pkg_name}$" "${pkg_list}" | grep "^Filename:" | head -1 | awk '{print $2}')
+        fi
 
         if [[ -n "$deb_path" ]]; then
             local deb_url="${debian_mirror}/${deb_path}"
