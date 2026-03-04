@@ -8,11 +8,12 @@
 #   debian-rootfs-{arch}.img.gz  — Debian bookworm rootfs
 #   linux-uml-{arch}             — UML kernel binary (ELF, runs as process)
 #
-# Requirements:
+# Requirements (install on whichever native runner you use):
 #   sudo apt install debootstrap qemu-user-static binfmt-support \
 #                    libguestfs-tools qemu-utils \
-#                    build-essential flex bison libssl-dev libelf-dev bc \
-#                    gcc-aarch64-linux-gnu
+#                    build-essential flex bison libssl-dev libelf-dev bc
+#
+# NOTE: UML cannot be cross-compiled. Run on a native aarch64 or x86_64 host.
 #
 # Usage:  ./scripts/build-debian-image.sh [aarch64|x86_64|all]
 
@@ -165,12 +166,22 @@ build_uml_kernel() {
     local build_dir="/tmp/linux-uml-${target_arch}"
     rm -rf "$build_dir"; mkdir -p "$build_dir"
 
-    # Cross-compile aarch64 UML when running on x86_64 CI
-    local cross=""
-    if [[ "$target_arch" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
-        cross="CROSS_COMPILE=aarch64-linux-gnu-"
-        log "Cross-compiling aarch64 UML on $(uname -m)..."
+    # UML (ARCH=um) is NOT cross-compilable.
+    # The kernel build always uses the host CPU's SUBARCH for the userspace ABI,
+    # so aarch64-linux-gnu-gcc would be handed x86-specific flags like -m64
+    # and fail. Each arch MUST be built natively on its own runner.
+    local host_arch
+    host_arch="$(uname -m)"
+    # Normalise uname output to our naming convention
+    [[ "$host_arch" == "arm64" ]] && host_arch="aarch64"
+
+    if [[ "$target_arch" != "$host_arch" ]]; then
+        die "UML cannot be cross-compiled: target=${target_arch} but host=${host_arch}. \
+Run this job on a native ${target_arch} runner (e.g. ubuntu-24.04-arm for aarch64)."
     fi
+
+    # Native build — no CROSS_COMPILE needed
+    local cross=""
 
     local J="-j$(nproc)"
 
