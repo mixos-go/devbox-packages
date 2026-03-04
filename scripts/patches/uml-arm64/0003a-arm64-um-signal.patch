@@ -1,0 +1,85 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 3a/7] arm64/um: add signal.c
+diff --git a/arch/arm64/um/signal.c b/arch/arm64/um/signal.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/signal.c
+@@ -0,0 +1,82 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/signal.c - UML signal frame setup for arm64 guests.
++ *
++ * When UML delivers a signal to a guest process it builds a signal frame
++ * on the guest stack, exactly as a native arm64 kernel would. The guest
++ * sigreturn trampoline (installed in the vDSO page by UML) calls
++ * __NR_rt_sigreturn to tear the frame down.
++ */
++
++#include <linux/signal.h>
++#include <linux/uaccess.h>
++#include <asm/ucontext.h>
++#include <asm/unistd.h>
++#include "sysdep/ptrace.h"
++
++/* arm64 rt_sigframe mirrors the native layout so glibc unwinders work */
++struct rt_sigframe {
++	struct siginfo info;
++	struct ucontext uc;
++};
++
++int setup_signal_stack_si(unsigned long stack_top, int sig,
++			  struct k_sigaction *ka, struct pt_regs *regs,
++			  siginfo_t *info, sigset_t *mask)
++{
++	struct rt_sigframe __user *frame;
++	unsigned long sp;
++	int err = 0;
++
++	sp = (stack_top - sizeof(*frame)) & ~15UL;
++	frame = (struct rt_sigframe __user *)sp;
++
++	err |= copy_siginfo_to_user(&frame->info, info);
++
++	err |= __put_user(0, &frame->uc.uc_flags);
++	err |= __put_user(NULL, &frame->uc.uc_link);
++	err |= __save_altstack(&frame->uc.uc_stack, regs->regs.sp);
++	err |= copy_to_user(&frame->uc.uc_mcontext.regs, &regs->regs,
++			    sizeof(regs->regs));
++	err |= __copy_to_user(&frame->uc.uc_sigmask, mask, sizeof(*mask));
++
++	if (err)
++		return err;
++
++	regs->regs.pc          = (unsigned long)ka->sa.sa_handler;
++	regs->regs.sp          = sp;
++	regs->regs.regs[0]     = sig;
++	regs->regs.regs[1]     = (unsigned long)&frame->info;
++	regs->regs.regs[2]     = (unsigned long)&frame->uc;
++	regs->regs.regs[30]    = (unsigned long)ka->sa.sa_restorer;
++
++	return 0;
++}
++
++long sys_rt_sigreturn(void)
++{
++	struct pt_regs *regs = current_pt_regs();
++	struct rt_sigframe __user *frame;
++	sigset_t set;
++
++	frame = (struct rt_sigframe __user *)regs->regs.sp;
++
++	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
++		goto badframe;
++
++	set_current_blocked(&set);
++
++	if (copy_from_user(&regs->regs, &frame->uc.uc_mcontext.regs,
++			   sizeof(regs->regs)))
++		goto badframe;
++
++	return regs->regs.regs[0];
++
++badframe:
++	force_sig(SIGSEGV);
++	return 0;
++}
