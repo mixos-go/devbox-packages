@@ -161,6 +161,18 @@ build_uml_kernel() {
         fi
         log "Extracting..."
         tar -xf "$tarball" -C /tmp
+
+        # Apply UML arm64 port patches (upstream kernel has no arm64 UML support)
+        if [[ "$target_arch" == "aarch64" ]]; then
+            log "Applying UML arm64 patches..."
+            local patch_dir
+            patch_dir="$(cd "$(dirname "$0")"; pwd)/patches/uml-arm64"
+            for p in "$patch_dir"/0*.patch; do
+                log "  → $(basename "$p")"
+                patch -d "$src_dir" -p1 --forward < "$p"
+            done
+            log "UML arm64 patches applied."
+        fi
     fi
 
     local build_dir="/tmp/linux-uml-${target_arch}"

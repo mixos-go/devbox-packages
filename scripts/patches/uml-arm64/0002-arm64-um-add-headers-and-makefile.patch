@@ -1,0 +1,171 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 2/4] arm64/um: add arch headers and build Makefile
+
+UML requires per-SUBARCH headers under arch/$(SUBARCH)/um/asm/ that
+describe the host register layout, ELF type, and ptrace interface used
+by the UML kernel to inspect/modify guest process state.
+
+On arm64 the canonical register file is struct user_pt_regs (as exposed
+by ptrace GETREGSET / NT_PRSTATUS), which holds:
+  - regs[31]  : general-purpose registers x0..x30
+  - sp, pc    : stack pointer and program counter
+  - pstate    : CPSR/SPSR equivalent
+
+diff --git a/arch/arm64/um/Makefile b/arch/arm64/um/Makefile
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/Makefile
+@@ -0,0 +1,9 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-y  = signal.o \
++          stub_segv.o \
++          sys_call_table.o \
++          task_size.o
++
++obj-y  += os-Linux/
++
++UNPROFILE_OBJS := stub_segv.o
+
+diff --git a/arch/arm64/um/os-Linux/Makefile b/arch/arm64/um/os-Linux/Makefile
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/os-Linux/Makefile
+@@ -0,0 +1,5 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-y = registers.o \
++         signal.o \
++         prctl.o \
++         uaccess.o
+
+diff --git a/arch/arm64/um/asm/arch_regs.h b/arch/arm64/um/asm/arch_regs.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/asm/arch_regs.h
+@@ -0,0 +1,50 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __UM_ARCH_REGS_ARM64_H
++#define __UM_ARCH_REGS_ARM64_H
++
++#include <generated/asm-offsets.h>
++
++/*
++ * arm64 UML host register file.
++ * Mirrors struct user_pt_regs from <asm/ptrace.h> (the native arm64 ABI).
++ * UML's ptrace layer fills this in via PTRACE_GETREGSET / NT_PRSTATUS.
++ */
++struct arch_regs {
++	unsigned long long regs[31]; /* x0 .. x30 */
++	unsigned long long sp;
++	unsigned long long pc;
++	unsigned long long pstate;
++};
++
++/* Accessors used by arch/um/kernel/regs.c */
++#define REGS_IP(r)         ((r).pc)
++#define REGS_SP(r)         ((r).sp)
++#define REGS_SET_SYSCALL_RETURN(r, res) ((r).regs[0] = (res))
++
++/* Syscall number is passed in x8 on arm64 */
++#define REGS_SYSCALL_NR(r)  ((r).regs[8])
++
++/* First 6 syscall args: x0..x5 */
++#define REGS_SYSCALL_ARG1(r) ((r).regs[0])
++#define REGS_SYSCALL_ARG2(r) ((r).regs[1])
++#define REGS_SYSCALL_ARG3(r) ((r).regs[2])
++#define REGS_SYSCALL_ARG4(r) ((r).regs[3])
++#define REGS_SYSCALL_ARG5(r) ((r).regs[4])
++#define REGS_SYSCALL_ARG6(r) ((r).regs[5])
++
++/* pstate bit that indicates the process is in syscall-entry */
++#define PSR_MODE_EL0t   0x00000000UL
++
++static inline int is_syscall(unsigned long long pstate)
++{
++	/* UML skas mode sets this flag when intercepting a syscall */
++	return 1;
++}
++
++#define HOST_TASK_REGS     offsetof(struct task_struct, thread.regs)
++#define HOST_TASK_PID      offsetof(struct task_struct, pid)
++
++/* Size of the register set when transferred via ptrace */
++#define FRAME_SIZE         sizeof(struct arch_regs)
++
++#endif /* __UM_ARCH_REGS_ARM64_H */
+
+diff --git a/arch/arm64/um/asm/elf.h b/arch/arm64/um/asm/elf.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/asm/elf.h
+@@ -0,0 +1,38 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __UM_ELF_ARM64_H
++#define __UM_ELF_ARM64_H
++
++#include <asm/user.h>
++
++/*
++ * ELF type / machine constant for arm64 binaries run inside UML.
++ * The guest sees a standard aarch64 ELF ABI.
++ */
++#define ELF_ARCH           EM_AARCH64
++#define ELF_CLASS          ELFCLASS64
++#define ELF_DATA           ELFDATA2LSB
++
++#define ELF_PLATFORM       "aarch64"
++
++/* arm64 has no FPU-disable bit in AT_HWCAP that we need to mask */
++#define ELF_HWCAP          (0)
++#define ELF_HWCAP2         (0)
++
++typedef unsigned long      elf_greg_t;
++#define ELF_NGREG          34   /* 31 GPR + sp + pc + pstate */
++typedef elf_greg_t         elf_gregset_t[ELF_NGREG];
++
++/* Needed for core dumps */
++#define ELF_CORE_COPY_REGS(pr_reg, regs)				\
++	do {								\
++		int __i;						\
++		for (__i = 0; __i < 31; __i++)				\
++			(pr_reg)[__i] = (regs)->regs.regs[__i];		\
++		(pr_reg)[31] = (regs)->regs.sp;				\
++		(pr_reg)[32] = (regs)->regs.pc;				\
++		(pr_reg)[33] = (regs)->regs.pstate;			\
++	} while (0)
++
++#define SET_PERSONALITY(ex)   do { } while (0)
++#define ARCH_HAS_SETUP_ADDITIONAL_PAGES 0
++
++#endif /* __UM_ELF_ARM64_H */
+
+diff --git a/arch/arm64/um/asm/ptrace.h b/arch/arm64/um/asm/ptrace.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/asm/ptrace.h
+@@ -0,0 +1,25 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __UM_PTRACE_ARM64_H
++#define __UM_PTRACE_ARM64_H
++
++#include <asm/arch_regs.h>
++
++/*
++ * UML ptrace interface for arm64.
++ * The UML kernel reads/writes guest registers via these macros.
++ * PT_* offsets must match the layout of struct arch_regs above.
++ */
++
++#define PT_REGS_IP(r)    REGS_IP((r)->regs)
++#define PT_REGS_SP(r)    REGS_SP((r)->regs)
++
++#define PT_FIX_EXEC_STACK(sp)  do { } while (0)
++
++/* Instruction pointer is pc field */
++#define instruction_pointer(regs)  ((regs)->regs.pc)
++#define user_stack_pointer(regs)   ((regs)->regs.sp)
++#define profile_pc(regs)           instruction_pointer(regs)
++
++#define MAX_REG_OFFSET  (offsetof(struct arch_regs, pstate))
++#define MAX_REG_NR      ((MAX_REG_OFFSET / sizeof(long)) + 1)
++
++#endif /* __UM_PTRACE_ARM64_H */

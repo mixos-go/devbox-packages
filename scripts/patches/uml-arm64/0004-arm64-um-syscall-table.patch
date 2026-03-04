@@ -1,0 +1,51 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 4/4] arm64/um: add syscall table
+
+arm64 uses the unified generic syscall table from
+include/uapi/asm-generic/unistd.h (same table as arm64 native).
+UML intercepts these syscalls at the ptrace level so the table
+just needs to point to the generic UML wrappers.
+
+diff --git a/arch/arm64/um/sys_call_table.c b/arch/arm64/um/sys_call_table.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/sys_call_table.c
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/sys_call_table.c
++ *
++ * arm64 UML syscall table.
++ *
++ * arm64 uses the generic syscall table (asm-generic/unistd.h), unlike
++ * x86 which has its own.  We just include the generic UML wrapper that
++ * maps each __NR_* to the corresponding sys_* or um_* handler.
++ *
++ * Syscall convention on arm64:
++ *   x8  = syscall number
++ *   x0..x5 = arguments
++ *   x0  = return value
++ *
++ * UML intercepts the SVC #0 instruction via ptrace SYSCALL-entry stop,
++ * reads x8 to get the syscall number, dispatches through this table,
++ * writes the result back to x0, then resumes the guest skipping the
++ * actual SVC so the host kernel never sees it.
++ */
++
++#include <linux/syscalls.h>
++#include <asm/unistd.h>
++
++#define __SYSCALL(nr, sym)  [nr] = (sys_call_ptr_t)sym,
++
++/*
++ * Reuse the generic syscall table — arm64 and UML-arm64 share the same
++ * __NR_* numbers (both derive from asm-generic/unistd.h).
++ */
++#undef  __NR_syscalls
++#include <asm-generic/unistd.h>
++
++const sys_call_ptr_t sys_call_table[__NR_syscalls] = {
++	[0 ... __NR_syscalls - 1] = (sys_call_ptr_t)sys_ni_syscall,
++#define __SYSCALL(nr, sym)  [nr] = (sys_call_ptr_t)sym,
++#include <asm-generic/unistd.h>
++};
