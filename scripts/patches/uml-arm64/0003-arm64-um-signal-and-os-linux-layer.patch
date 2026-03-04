@@ -11,7 +11,6 @@ Key differences from x86:
   PTRACE_GETREGS, only the regset API)
 - Syscall NR is in x8 (not orig_eax/orig_rax)
 - PTRACE_SYSCALL works the same way for skas mode
-
 diff --git a/arch/arm64/um/signal.c b/arch/arm64/um/signal.c
 new file mode 100644
 --- /dev/null
@@ -102,7 +101,6 @@ new file mode 100644
 +	force_sig(SIGSEGV);
 +	return 0;
 +}
-
 diff --git a/arch/arm64/um/stub_segv.c b/arch/arm64/um/stub_segv.c
 new file mode 100644
 --- /dev/null
@@ -146,7 +144,6 @@ new file mode 100644
 +void __attribute__ ((section (".stub"))) stub_end(void)
 +{
 +}
-
 diff --git a/arch/arm64/um/task_size.c b/arch/arm64/um/task_size.c
 new file mode 100644
 --- /dev/null
@@ -172,7 +169,6 @@ new file mode 100644
 +{
 +	return UML_TASK_SIZE;
 +}
-
 diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registers.c
 new file mode 100644
 --- /dev/null
@@ -250,7 +246,6 @@ new file mode 100644
 +{
 +	/* Nothing to initialize on arm64 for the ptrace register interface */
 +}
-
 diff --git a/arch/arm64/um/os-Linux/signal.c b/arch/arm64/um/os-Linux/signal.c
 new file mode 100644
 --- /dev/null
@@ -301,7 +296,6 @@ new file mode 100644
 +void arch_do_signal(struct pt_regs *regs, int sig)
 +{
 +}
-
 diff --git a/arch/arm64/um/os-Linux/prctl.c b/arch/arm64/um/os-Linux/prctl.c
 new file mode 100644
 --- /dev/null
@@ -326,7 +320,6 @@ new file mode 100644
 +	prctl(PR_PAC_RESET_KEYS, PR_PAC_APIAKEY | PR_PAC_APIBKEY |
 +	      PR_PAC_APDAKEY | PR_PAC_APDBKEY | PR_PAC_APGAKEY, 0, 0, 0);
 +}
-
 diff --git a/arch/arm64/um/os-Linux/uaccess.c b/arch/arm64/um/os-Linux/uaccess.c
 new file mode 100644
 --- /dev/null

@@ -5,7 +5,6 @@ arm64 uses the unified generic syscall table from
 include/uapi/asm-generic/unistd.h (same table as arm64 native).
 UML intercepts these syscalls at the ptrace level so the table
 just needs to point to the generic UML wrappers.
-
 diff --git a/arch/arm64/um/sys_call_table.c b/arch/arm64/um/sys_call_table.c
 new file mode 100644
 --- /dev/null
