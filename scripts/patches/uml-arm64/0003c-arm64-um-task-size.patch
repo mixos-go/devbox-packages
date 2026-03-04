@@ -4,7 +4,7 @@ diff --git a/arch/arm64/um/task_size.c b/arch/arm64/um/task_size.c
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/task_size.c
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,17 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * arch/arm64/um/task_size.c
