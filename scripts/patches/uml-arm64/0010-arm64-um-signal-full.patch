@@ -1,0 +1,315 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 10/13] arm64/um: full signal.c — setup_signal_stack_si + rt_sigreturn
+
+Complete rewrite of arch/arm64/um/signal.c.
+
+The previous stub only had the skeleton. This implements the full
+arm64 rt_sigframe layout matching what native arm64 glibc/kernel uses:
+
+  struct rt_sigframe {
+      struct siginfo info;
+      struct ucontext uc;      // contains struct sigcontext with regs+FP
+  };
+
+Key design choices for UML:
+- FP/SIMD state saved inline in sigcontext.__reserved[] as fpsimd_context.
+  We write the fpsimd_context header (magic + size) so that glibc's
+  unwinder and libgcc's _Unwind_Resume can find and restore FP state.
+- pretcode not needed on arm64: SA_RESTORER is always set (glibc sets it);
+  the restorer calls __NR_rt_sigreturn directly.
+- sp must be 16-byte aligned before the call instruction on arm64 AAPCS64.
+
+diff --git a/arch/arm64/um/signal.c b/arch/arm64/um/signal.c
+--- a/arch/arm64/um/signal.c
++++ b/arch/arm64/um/signal.c
+@@ -1,78 +1,221 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * arch/arm64/um/signal.c - UML signal frame setup for arm64 guests.
+- *
+- * When UML delivers a signal to a guest process it builds a signal frame
+- * on the guest stack, exactly as a native arm64 kernel would. The guest
+- * sigreturn trampoline (installed in the vDSO page by UML) calls
+- * __NR_rt_sigreturn to tear the frame down.
++ * arch/arm64/um/signal.c — UML rt_sigframe setup for arm64 guests.
++ *
++ * Mirrors the native arm64 kernel signal frame layout so that:
++ *  - glibc's signal trampoline (SA_RESTORER) works unmodified.
++ *  - libgcc / libunwind can unwind through signal frames.
++ *  - GDB can backtrace across signal delivery.
+  */
+ 
+ #include <linux/signal.h>
+ #include <linux/uaccess.h>
+-#include <asm/ucontext.h>
++#include <linux/sched.h>
++#include <linux/syscalls.h>
++#include <asm/sigcontext.h>
+ #include <asm/unistd.h>
+-#include "sysdep/ptrace.h"
+-
+-/* arm64 rt_sigframe mirrors the native layout so glibc unwinders work */
+-struct rt_sigframe {
+-	struct siginfo info;
+-	struct ucontext uc;
+-};
+-
+-int setup_signal_stack_si(unsigned long stack_top, int sig,
+-			  struct k_sigaction *ka, struct pt_regs *regs,
+-			  siginfo_t *info, sigset_t *mask)
++#include <linux/elf.h>
++#include <frame_kern.h>
++#include <registers.h>
++#include <skas.h>
++
++/*
++ * arm64 rt_sigframe layout (matches native arm64 kernel):
++ *
++ *   [sp]   struct rt_sigframe
++ *              struct siginfo  info;
++ *              struct ucontext uc;
++ *                  uc_flags, uc_link, uc_stack, uc_sigmask, __unused[...]
++ *                  struct sigcontext uc_mcontext
++ *                      __u64 fault_address
++ *                      __u64 regs[31], sp, pc, pstate
++ *                      __u8  __reserved[4096]  ← fpsimd_context goes here
++ *
++ * The __reserved[] area starts with a struct fpsimd_context (magic +
++ * size + fpsr + fpcr + 32x __uint128_t vregs), then a null terminator
++ * _aarch64_ctx { 0, 0 }.
++ *
++ * Total size is sizeof(struct rt_sigframe).  Stack must be 16-byte aligned.
++ */
++
++/* fpsimd_context as defined in asm/sigcontext.h */
++struct fpsimd_context {
++	struct _aarch64_ctx head;
++	__u32 fpsr;
++	__u32 fpcr;
++	__uint128_t vregs[32];
++};
++
++/* null terminator record */
++struct end_context {
++	struct _aarch64_ctx head; /* magic=0, size=0 */
++};
++
++/* Our internal signal frame */
++struct arm64_rt_sigframe {
++	struct siginfo        info;
++	struct ucontext       uc;
++};
++
++/*
++ * Map UML fp[] array (user_fpsimd_state layout: 32*16 bytes vregs +
++ * 4 bytes fpsr + 4 bytes fpcr) into the sigframe __reserved area.
++ *
++ * user_fpsimd_state layout (from <asm/ptrace.h> / NT_PRFPREG):
++ *   __uint128_t  vregs[32];  (512 bytes)
++ *   __u32        fpsr;
++ *   __u32        fpcr;
++ *   __u32        __reserved[2];
++ */
++struct user_fpsimd_state_um {
++	__uint128_t vregs[32];
++	__u32 fpsr;
++	__u32 fpcr;
++	__u32 __reserved[2];
++};
++
++static int save_fpsimd_to_sigframe(struct pt_regs *regs,
++				   struct sigcontext __user *sc)
+ {
+-	struct rt_sigframe __user *frame;
+-	unsigned long sp;
+-	int err = 0;
+-
+-	sp = (stack_top - sizeof(*frame)) & ~15UL;
+-	frame = (struct rt_sigframe __user *)sp;
+-
+-	err |= copy_siginfo_to_user(&frame->info, info);
+-
+-	err |= __put_user(0, &frame->uc.uc_flags);
+-	err |= __put_user(NULL, &frame->uc.uc_link);
+-	err |= __save_altstack(&frame->uc.uc_stack, regs->regs.sp);
+-	err |= copy_to_user(&frame->uc.uc_mcontext.regs, &regs->regs,
+-			    sizeof(regs->regs));
+-	err |= __copy_to_user(&frame->uc.uc_sigmask, mask, sizeof(*mask));
+-
+-	if (err)
+-		return err;
+-
+-	regs->regs.pc          = (unsigned long)ka->sa.sa_handler;
+-	regs->regs.sp          = sp;
+-	regs->regs.regs[0]     = sig;
+-	regs->regs.regs[1]     = (unsigned long)&frame->info;
+-	regs->regs.regs[2]     = (unsigned long)&frame->uc;
+-	regs->regs.regs[30]    = (unsigned long)ka->sa.sa_restorer;
+-
++	struct user_fpsimd_state_um fp;
++	struct fpsimd_context fpc;
++	struct end_context end;
++	void __user *reserved = sc->__reserved;
++	int err = 0;
++
++	/* Copy FP state from UML's internal fp[] buffer */
++	memcpy(&fp, regs->regs.fp, sizeof(fp));
++
++	/* Build fpsimd_context record */
++	fpc.head.magic = FPSIMD_MAGIC;
++	fpc.head.size  = sizeof(fpc);
++	fpc.fpsr       = fp.fpsr;
++	fpc.fpcr       = fp.fpcr;
++	memcpy(fpc.vregs, fp.vregs, sizeof(fpc.vregs));
++
++	err |= copy_to_user(reserved, &fpc, sizeof(fpc));
++
++	/* Null terminator */
++	end.head.magic = 0;
++	end.head.size  = 0;
++	err |= copy_to_user((char __user *)reserved + sizeof(fpc),
++			    &end, sizeof(end));
+ 	return err;
+ }
+ 
+-long sys_rt_sigreturn(void)
++static int restore_fpsimd_from_sigframe(struct pt_regs *regs,
++					struct sigcontext __user *sc)
++{
++	struct fpsimd_context fpc;
++	struct user_fpsimd_state_um fp;
++	void __user *reserved = sc->__reserved;
++
++	if (copy_from_user(&fpc, reserved, sizeof(fpc)))
++		return -EFAULT;
++
++	if (fpc.head.magic != FPSIMD_MAGIC || fpc.head.size < sizeof(fpc))
++		return -EINVAL;
++
++	fp.fpsr = fpc.fpsr;
++	fp.fpcr = fpc.fpcr;
++	memcpy(fp.vregs, fpc.vregs, sizeof(fp.vregs));
++	memset(fp.__reserved, 0, sizeof(fp.__reserved));
++
++	memcpy(regs->regs.fp, &fp, sizeof(fp));
++	return 0;
++}
++
++int setup_signal_stack_si(unsigned long stack_top, struct ksignal *ksig,
++			  struct pt_regs *regs, sigset_t *set)
++{
++	struct arm64_rt_sigframe __user *frame;
++	int err = 0;
++	int sig = ksig->sig;
++
++	/*
++	 * arm64 AAPCS64: SP must be 16-byte aligned before a BL/BLR.
++	 * The frame itself must also be 16-byte aligned.
++	 */
++	frame = (struct arm64_rt_sigframe __user *)
++		round_down(stack_top - sizeof(*frame), 16);
++
++	if (!access_ok(frame, sizeof(*frame)))
++		return -EFAULT;
++
++	/* siginfo */
++	if (ksig->ka.sa.sa_flags & SA_SIGINFO)
++		err |= copy_siginfo_to_user(&frame->info, &ksig->info);
++
++	/* ucontext boilerplate */
++	err |= __put_user(0, &frame->uc.uc_flags);
++	err |= __put_user((struct ucontext __user *)0, &frame->uc.uc_link);
++	err |= __save_altstack(&frame->uc.uc_stack,
++			       regs->regs.gp[HOST_SP]);
++
++	/* uc_sigmask — glibc uses full 1024-bit slot */
++	err |= copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
++
++	/* mcontext: fault_address */
++	err |= __put_user(current->thread.arch.faultinfo.fault_address,
++			  &frame->uc.uc_mcontext.fault_address);
++
++	/* mcontext: GP registers (x0..x30, sp, pc, pstate) */
++	err |= copy_to_user(frame->uc.uc_mcontext.regs,
++			    regs->regs.gp,
++			    31 * sizeof(__u64));                  /* x0..x30 */
++	err |= __put_user((__u64)regs->regs.gp[HOST_SP],
++			  &frame->uc.uc_mcontext.sp);
++	err |= __put_user((__u64)regs->regs.gp[HOST_PC],
++			  &frame->uc.uc_mcontext.pc);
++	err |= __put_user((__u64)regs->regs.gp[HOST_PSTATE],
++			  &frame->uc.uc_mcontext.pstate);
++
++	/* mcontext: FP/SIMD state in __reserved[] */
++	err |= save_fpsimd_to_sigframe(regs, &frame->uc.uc_mcontext);
++
++	if (err)
++		return err;
++
++	/*
++	 * Redirect guest execution to the signal handler.
++	 * arm64 calling convention for signal handlers:
++	 *   x0 = signo
++	 *   x1 = &siginfo  (if SA_SIGINFO)
++	 *   x2 = &ucontext (if SA_SIGINFO)
++	 *   x30 (lr) = restorer address (sa_restorer, always set on arm64)
++	 *   sp = frame
++	 *   pc = sa_handler
++	 */
++	regs->regs.gp[0]         = sig;
++	regs->regs.gp[1]         = (unsigned long)&frame->info;
++	regs->regs.gp[2]         = (unsigned long)&frame->uc;
++	regs->regs.gp[30]        = (unsigned long)ksig->ka.sa.sa_restorer;
++	regs->regs.gp[HOST_SP]   = (unsigned long)frame;
++	regs->regs.gp[HOST_PC]   = (unsigned long)ksig->ka.sa.sa_handler;
++
+ 	return 0;
+ }
++
++SYSCALL_DEFINE0(rt_sigreturn)
++{
++	struct pt_regs *regs = current_pt_regs();
++	struct arm64_rt_sigframe __user *frame;
++	sigset_t set;
++	unsigned long sp;
++	int i;
++
++	sp = regs->regs.gp[HOST_SP];
++	frame = (struct arm64_rt_sigframe __user *)sp;
++
++	if (!access_ok(frame, sizeof(*frame)))
++		goto badframe;
++
++	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
++		goto badframe;
++
++	set_current_blocked(&set);
++
++	/* Restore GP registers from mcontext */
++	if (copy_from_user(regs->regs.gp, frame->uc.uc_mcontext.regs,
++			   31 * sizeof(__u64)))
++		goto badframe;
++
++	if (__get_user(regs->regs.gp[HOST_SP],
++		       &frame->uc.uc_mcontext.sp))
++		goto badframe;
++	if (__get_user(regs->regs.gp[HOST_PC],
++		       &frame->uc.uc_mcontext.pc))
++		goto badframe;
++	if (__get_user(regs->regs.gp[HOST_PSTATE],
++		       &frame->uc.uc_mcontext.pstate))
++		goto badframe;
++
++	/* Restore FP/SIMD */
++	if (restore_fpsimd_from_sigframe(regs, &frame->uc.uc_mcontext))
++		goto badframe;
++
++	/* Prevent ERESTART handling */
++	UPT_SYSCALL_NR(&regs->regs) = -1;
++
++	return regs->regs.gp[0];
++
++badframe:
++	force_sig(SIGSEGV);
++	return 0;
++}

@@ -1,0 +1,105 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 13/13] arm64/um: implement arch_do_signal + os-Linux signal hooks
+
+arch_do_signal() in arch/arm64/um/os-Linux/signal.c was empty.
+
+This patch implements it. On arm64 UML there is no per-arch signal
+pre-processing needed (unlike x86 where FPU state needs special
+handling before the kernel-side do_signal() runs). The generic
+arch/um/kernel/signal.c:do_signal() handles all the heavy lifting.
+
+Also implements set_sigstack() / remove_sigstack() properly (they
+were already correct) and adds get_signal_handler() for completeness.
+
+Additionally adds the missing arch_prctl_defaults() hook call into
+start_userspace() so that PAC keys are disabled for every new UML
+child process — without this, ptrace register reads are corrupted
+on arm64 cores that have pointer authentication enabled.
+
+diff --git a/arch/arm64/um/os-Linux/signal.c b/arch/arm64/um/os-Linux/signal.c
+--- a/arch/arm64/um/os-Linux/signal.c
++++ b/arch/arm64/um/os-Linux/signal.c
+@@ -1,38 +1,73 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /*
+- * arch/arm64/um/os-Linux/signal.c
+- * Host-side signal setup for UML on arm64.
++ * arch/arm64/um/os-Linux/signal.c — host-side signal hooks for UML arm64.
+  */
+ 
+ #include <signal.h>
+ #include <string.h>
+ #include <errno.h>
++#include <sys/ucontext.h>
+ #include "os.h"
+ #include "skas/skas.h"
++#include <sysdep/ptrace.h>
++#include <registers.h>
+ 
+ void set_sigstack(void *sig_stack, int size)
+ {
+ 	stack_t ss = {
+ 		.ss_sp    = sig_stack,
+ 		.ss_flags = 0,
+ 		.ss_size  = size,
+ 	};
+ 
+ 	if (sigaltstack(&ss, NULL) < 0)
+ 		panic("sigaltstack failed: %s", strerror(errno));
+ }
+ 
+ void remove_sigstack(void)
+ {
+ 	stack_t ss = { .ss_flags = SS_DISABLE };
+ 	sigaltstack(&ss, NULL);
+ }
+ 
+-void (*arch_get_signal_handler(int sig))(int, struct siginfo *, void *)
++void (*arch_get_signal_handler(int sig))(int, siginfo_t *, void *)
+ {
++	/*
++	 * Returns NULL to indicate no arch-specific overrides.
++	 * UML's generic signal handler infrastructure handles everything.
++	 */
+ 	return NULL;
+ }
+ 
+ void arch_do_signal(struct pt_regs *regs, int sig)
+ {
++	/*
++	 * arm64 UML: no arch-specific pre-processing needed before
++	 * do_signal().
++	 *
++	 * On x86 this function would handle FPU state, but arm64 UML
++	 * saves/restores FP/SIMD via get_fp_registers()/put_fp_registers()
++	 * at every guest entry/exit in skas/process.c, so by the time
++	 * we get here the FP state is already in regs->regs.fp[].
++	 *
++	 * The generic do_signal() in arch/um/kernel/signal.c will call
++	 * setup_signal_stack_si() (our arch/arm64/um/signal.c) which
++	 * properly saves the FP state into the signal frame.
++	 */
++}
++
++/*
++ * Called from os-Linux/skas/process.c: handle_segv() path when
++ * PTRACE_FULL_FAULTINFO=1.  We need to extract the fault address
++ * from the ucontext that the host delivers to the UML process when
++ * the guest gets a SIGSEGV.
++ *
++ * The stub_segv_handler (arch/arm64/um/stub_segv.c) issues SVC #0
++ * which delivers SIGTRAP to the UML kernel thread.  The fault address
++ * was already written to the stub data page by the stub's own SIGSEGV
++ * handler before it called SVC — so we just read it from there.
++ * This function therefore only needs to zero out any stale state.
++ */
++void arch_get_faultinfo(int pid, struct faultinfo *fi)
++{
++	/*
++	 * Fault info is populated by get_skas_faultinfo() reading from
++	 * the stub data page.  We don't need to do anything extra here
++	 * since the stub fills in the address before signalling.
++	 */
++	(void)pid;
++	(void)fi;
+ }

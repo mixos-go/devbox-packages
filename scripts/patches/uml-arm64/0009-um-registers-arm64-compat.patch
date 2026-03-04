@@ -1,0 +1,38 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 9/9] um/os-Linux/registers.c: arm64 compat for init_pid_registers
+
+init_pid_registers() calls ptrace(PTRACE_GETREGS) which does not exist
+on arm64. Route through ptrace_getregs() which is now implemented in
+arch/arm64/um/os-Linux/registers.c using PTRACE_GETREGSET/NT_PRSTATUS.
+
+diff --git a/arch/um/os-Linux/registers.c b/arch/um/os-Linux/registers.c
+--- a/arch/um/os-Linux/registers.c
++++ b/arch/um/os-Linux/registers.c
+@@ -15,10 +15,24 @@ static unsigned long exec_fp_regs[FP_SIZE];
+ 
+ int init_pid_registers(int pid)
+ {
+-	int err;
+-
+-	err = ptrace(PTRACE_GETREGS, pid, 0, exec_regs);
+-	if (err < 0)
+-		return -errno;
++	int err = 0;
++
++#ifdef __aarch64__
++	/*
++	 * arm64 has no PTRACE_GETREGS.  Use the arch-specific wrapper
++	 * ptrace_getregs() which calls PTRACE_GETREGSET/NT_PRSTATUS.
++	 * ptrace_getregs() is defined in arch/arm64/um/os-Linux/registers.c.
++	 */
++	err = ptrace_getregs(pid, exec_regs);
++	if (err < 0)
++		return err;
++#else
++	err = ptrace(PTRACE_GETREGS, pid, 0, exec_regs);
++	if (err < 0)
++		return -errno;
++#endif
+ 
+ 	arch_init_registers(pid);
+ 	get_fp_registers(pid, exec_fp_regs);

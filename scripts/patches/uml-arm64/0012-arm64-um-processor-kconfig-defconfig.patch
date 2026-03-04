@@ -1,0 +1,138 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 12/13] arm64/um: add processor.h, Kconfig, and arm64 defconfig
+
+processor.h — arch_thread struct for arm64 UML (holds faultinfo,
+  no debug registers unlike x86).  Also defines current_sp(),
+  current_bp() using inline asm, and cpu_relax() using arm64 YIELD.
+
+Kconfig — minimal arm64/um Kconfig: 64BIT, no SC_SIGNALS (arm64 only
+  uses rt_sigframe), MODULES_USE_ELF_RELA, 3-level page tables for
+  39-bit VA space (default arm64 with 4K pages).
+
+defconfig — arm64 UML defconfig based on x86_64_defconfig with
+  arm64-appropriate options: HOSTFS, UBD, slirp networking, no
+  x86-specific options.
+
+diff --git a/arch/arm64/um/asm/processor.h b/arch/arm64/um/asm/processor.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/asm/processor.h
+@@ -0,0 +1,49 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __UM_PROCESSOR_ARM64_H
++#define __UM_PROCESSOR_ARM64_H
++
++#include <linux/time-internal.h>
++#include <sysdep/faultinfo.h>
++
++/*
++ * arm64 UML per-thread arch state.
++ * No hardware debug registers accessible from userspace on arm64
++ * (watchpoints/breakpoints are in EL1 only), so this is minimal.
++ */
++struct arch_thread {
++	struct faultinfo faultinfo;
++};
++
++#define INIT_ARCH_THREAD { .faultinfo = { 0, 0, 0 } }
++
++#define STACKSLOTS_PER_LINE 4
++
++static inline void arch_flush_thread(struct arch_thread *thread)
++{
++	/* nothing to flush on arm64 */
++}
++
++static inline void arch_copy_thread(struct arch_thread *from,
++				    struct arch_thread *to)
++{
++	/* nothing to copy — no per-thread debug state */
++}
++
++/* Read current SP/FP via inline asm — used by UML backtrace code */
++#define current_sp() \
++	({ unsigned long _sp; __asm__("mov %0, sp" : "=r"(_sp)); _sp; })
++
++#define current_bp() \
++	({ unsigned long _fp; __asm__("mov %0, x29" : "=r"(_fp)); _fp; })
++
++/*
++ * cpu_relax: on arm64 use YIELD hint in normal mode, or time-travel
++ * ndelay when running in deterministic simulation mode.
++ */
++static __always_inline void cpu_relax(void)
++{
++	if (time_travel_mode == TT_MODE_INFCPU ||
++	    time_travel_mode == TT_MODE_EXTERNAL)
++		time_travel_ndelay(1);
++	else
++		__asm__ __volatile__("yield" ::: "memory");
++}
++
++#endif /* __UM_PROCESSOR_ARM64_H */
+diff --git a/arch/arm64/um/Kconfig b/arch/arm64/um/Kconfig
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/Kconfig
+@@ -0,0 +1,30 @@
++# SPDX-License-Identifier: GPL-2.0
++
++config UML_ARM64
++	def_bool y
++
++config 64BIT
++	def_bool y
++
++config MODULES_USE_ELF_RELA
++	def_bool y
++
++config 3_LEVEL_PGTABLES
++	def_bool y
++	help
++	  arm64 UML uses a 39-bit VA (512 GB) user address space with
++	  3-level page tables (4K pages, PGD/PUD/PMD).  This mirrors
++	  the default arm64 kernel configuration and matches TASK_SIZE.
++
++# arm64 always uses rt_sigframe (no classic sigframe)
++config ARCH_HAS_SC_SIGNALS
++	def_bool n
++
++# arm64 does not reuse host vsyscall area
++config ARCH_REUSE_HOST_VSYSCALL_AREA
++	def_bool n
++
++config GENERIC_HWEIGHT
++	def_bool y
++
++config ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
++	def_bool y
+diff --git a/arch/um/configs/aarch64_defconfig b/arch/um/configs/aarch64_defconfig
+new file mode 100644
+--- /dev/null
++++ b/arch/um/configs/aarch64_defconfig
+@@ -0,0 +1,25 @@
++CONFIG_UML=y
++CONFIG_64BIT=y
++# CONFIG_SMP is not set
++CONFIG_NET=y
++CONFIG_INET=y
++CONFIG_PACKET=y
++CONFIG_UNIX=y
++CONFIG_BINFMT_ELF=y
++CONFIG_BINFMT_SCRIPT=y
++CONFIG_PROC_FS=y
++CONFIG_SYSFS=y
++CONFIG_TMPFS=y
++CONFIG_HOSTFS=y
++CONFIG_BLK_DEV_UBD=y
++CONFIG_STDERR_CONSOLE=y
++CONFIG_SSL=y
++CONFIG_UML_NET=y
++CONFIG_UML_NET_SLIRP=y
++CONFIG_UNIX98_PTYS=y
++CONFIG_EXT4_FS=y
++CONFIG_EXT4_USE_FOR_EXT2=y
++CONFIG_PRINTK=y
++CONFIG_BUG=y
++# CONFIG_KASAN is not set
++# CONFIG_KCOV is not set

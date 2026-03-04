@@ -1,0 +1,57 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 8/9] um/os-Linux/start_up.c: make check_sysemu non-fatal, export flag
+
+check_sysemu() currently calls fatal() if PTRACE_SYSEMU fails.
+On arm64 (and Android), PTRACE_SYSEMU is not available, so UML would
+always abort at startup.
+
+Change check_sysemu() to set a global flag `sysemu_supported` instead
+of dying, and export it so skas/process.c can select the correct
+ptrace operation at runtime.
+
+This enables the PTRACE_SYSCALL two-stop fallback added in the
+previous patch.
+
+diff --git a/arch/um/os-Linux/start_up.c b/arch/um/os-Linux/start_up.c
+--- a/arch/um/os-Linux/start_up.c
++++ b/arch/um/os-Linux/start_up.c
+@@ -1,6 +1,14 @@
+ // SPDX-License-Identifier: GPL-2.0
+ /* ... existing copyright headers ... */
+ 
++/*
++ * sysemu_supported: exported to os-Linux/skas/process.c.
++ *   1 = PTRACE_SYSEMU works (x86 or patched arm64 kernel)
++ *   0 = must use PTRACE_SYSCALL two-stop fallback (arm64 / Android)
++ *
++ * Default 0 is safe: if check_sysemu is never called we fall back.
++ */
++int sysemu_supported = 0;
++
+ static void __init check_sysemu(void)
+ {
+ 	int pid, n, status, count=0;
+@@ -20,7 +28,7 @@ static void __init check_sysemu(void)
+ 		if ((ptrace(PTRACE_SETOPTIONS, pid, 0,
+ 			   (void *) PTRACE_O_TRACESYSGOOD) < 0))
+-		fatal_perror("check_sysemu: PTRACE_SETOPTIONS failed");
++		goto fail;
+ 
+ 	while (1) {
+ 		count++;
+ 		if (ptrace(PTRACE_SYSEMU_SINGLESTEP, pid, 0, 0) < 0)
+ 			goto fail;
+@@ -48,7 +56,7 @@ static void __init check_sysemu(void)
+ 	stop_ptraced_child(pid, 0);
+ 
+ 	os_info("OK\n");
+-
++	sysemu_supported = 1;
+ 	return;
+ 
+ fail:
+ 	stop_ptraced_child(pid, 1);
+-	fatal("missing\n");
++	os_info("not available - using PTRACE_SYSCALL fallback\n");
++	sysemu_supported = 0;
+ }

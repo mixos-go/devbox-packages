@@ -1,0 +1,117 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 11/13] arm64/um: add shared/sysdep/ptrace.h and syscalls.h
+
+sysdep/ptrace.h — UPT_* accessor macros for arm64 register file.
+  These are used throughout arch/um/kernel/ (e.g. in ptrace.c,
+  exec.c, process.c) to access individual registers from
+  struct uml_pt_regs via the gp[] flat array.
+
+sysdep/syscalls.h — EXECUTE_SYSCALL macro for arm64.
+  arm64 uses x0..x5 for syscall args and x8 for the number,
+  matching REGS_SYSCALL_ARG* macros in arch_regs.h.
+
+diff --git a/arch/arm64/um/shared/sysdep/ptrace.h b/arch/arm64/um/shared/sysdep/ptrace.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/shared/sysdep/ptrace.h
+@@ -0,0 +1,62 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __SYSDEP_ARM64_PTRACE_H
++#define __SYSDEP_ARM64_PTRACE_H
++
++#include <sysdep/ptrace_user.h>
++
++/*
++ * arm64 UML register accessors.
++ *
++ * gp[] layout (matches struct user_pt_regs / NT_PRSTATUS):
++ *   gp[0]  .. gp[30] = x0 .. x30
++ *   gp[31] = sp
++ *   gp[32] = pc
++ *   gp[33] = pstate
++ *
++ * HOST_SP / HOST_PC / HOST_PSTATE are defined in sysdep/ptrace_user.h.
++ */
++
++#define MAX_FP_NR  FP_SIZE
++
++/* GP register direct index accessors */
++#define REGS_X(r, n)   ((r)[(n)])
++
++#define UPT_X(r, n)    REGS_X((r)->gp, (n))
++
++/* Named aliases for commonly used registers */
++#define UPT_SP(r)      ((r)->gp[HOST_SP])
++#define UPT_PC(r)      ((r)->gp[HOST_PC])
++#define UPT_PSTATE(r)  ((r)->gp[HOST_PSTATE])
++
++/* Syscall register convention */
++#define UPT_SYSCALL_NR(r)   ((r)->gp[8])       /* x8 = syscall number */
++#define UPT_SYSCALL_RET(r)  ((r)->gp[0])        /* x0 = return value */
++
++/* Syscall arguments: x0..x5 */
++#define UPT_SYSCALL_ARG1(r) ((r)->gp[0])
++#define UPT_SYSCALL_ARG2(r) ((r)->gp[1])
++#define UPT_SYSCALL_ARG3(r) ((r)->gp[2])
++#define UPT_SYSCALL_ARG4(r) ((r)->gp[3])
++#define UPT_SYSCALL_ARG5(r) ((r)->gp[4])
++#define UPT_SYSCALL_ARG6(r) ((r)->gp[5])
++
++/* IP / SP aliases used by arch/um/kernel/ */
++#define UPT_IP(r)      UPT_PC(r)
++
++/* PT_REGS_* wrappers — used by arch/um/kernel/signal.c */
++#define PT_REGS_SP(regs)   UPT_SP(&(regs)->regs)
++#define PT_REGS_IP(regs)   UPT_PC(&(regs)->regs)
++
++/* Syscall restart: decrement PC by 4 (size of SVC instruction) */
++#define PT_REGS_RESTART_SYSCALL(regs) \
++	(PT_REGS_IP(regs) -= 4)
++
++#define PT_REGS_ORIG_SYSCALL(regs) \
++	((regs)->regs.gp[8])
++
++#define PT_REGS_SYSCALL_NR(regs) \
++	UPT_SYSCALL_NR(&(regs)->regs)
++
++#define PT_REGS_SET_SYSCALL_RETURN(regs, ret) \
++	((regs)->regs.gp[0] = (ret))
++
++#define PT_REGS_SYSCALL_RET(regs) \
++	((regs)->regs.gp[0])
++
++extern void arch_init_registers(int pid);
++
++#endif /* __SYSDEP_ARM64_PTRACE_H */
+diff --git a/arch/arm64/um/shared/sysdep/syscalls.h b/arch/arm64/um/shared/sysdep/syscalls.h
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/shared/sysdep/syscalls.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __SYSDEP_ARM64_SYSCALLS_H
++#define __SYSDEP_ARM64_SYSCALLS_H
++
++#include <linux/msg.h>
++#include <linux/shm.h>
++
++typedef long syscall_handler_t(long, long, long, long, long, long);
++
++extern syscall_handler_t *sys_call_table[];
++
++/*
++ * EXECUTE_SYSCALL — dispatches a UML guest syscall through sys_call_table[].
++ *
++ * arm64 ABI: x0..x5 = args, x8 = syscall nr, x0 = return value.
++ * This matches UPT_SYSCALL_ARG1..6 defined in sysdep/ptrace.h.
++ */
++#define EXECUTE_SYSCALL(syscall, regs) \
++	(((*sys_call_table[syscall]))( \
++		UPT_SYSCALL_ARG1(&regs->regs), \
++		UPT_SYSCALL_ARG2(&regs->regs), \
++		UPT_SYSCALL_ARG3(&regs->regs), \
++		UPT_SYSCALL_ARG4(&regs->regs), \
++		UPT_SYSCALL_ARG5(&regs->regs), \
++		UPT_SYSCALL_ARG6(&regs->regs)))
++
++#endif /* __SYSDEP_ARM64_SYSCALLS_H */
