@@ -1,112 +1,78 @@
 From: DevBox UML arm64 Port
-Subject: [PATCH 6/9] arm64/um: add ptrace_getregs/setregs wrappers + FP/SIMD registers
+Subject: [PATCH 6/13] arm64/um: add os-Linux/registers.c with full GP + FP/SIMD + ptrace wrappers
 
-arch/um/os-Linux/registers.c calls ptrace_getregs()/ptrace_setregs()
-and arch/um/os-Linux/skas/process.c calls ptrace(PTRACE_GETREGS/SETREGS).
-
-arm64 has no PTRACE_GETREGS/SETREGS — registers must be accessed via
-PTRACE_GETREGSET/SETREGSET with NT_PRSTATUS (GP regs) or NT_PRFPREG
-(FP/SIMD regs).
-
-This patch adds arm64-specific implementations of:
-- ptrace_getregs() / ptrace_setregs() — used by registers.c
-- get_fp_registers() / put_fp_registers() — FP/SIMD via NT_PRFPREG
-- get_thread_reg() — jmp_buf accessor for switch context
-
-These replace the stubs in 0003d and the empty FP stubs in 0003e.
+Full registers.c for arm64 UML:
+- save_registers/restore_registers via PTRACE_GETREGSET/NT_PRSTATUS
+- ptrace_getregs/ptrace_setregs wrappers (arm64 has no PTRACE_GETREGS)
+- get_fp_registers/put_fp_registers via NT_PRFPREG (FP/SIMD)
+- arch_init_registers (no-op, NEON always present on ARMv8)
+- get_thread_reg for jmp_buf context switch
 
 diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registers.c
---- a/arch/arm64/um/os-Linux/registers.c
+new file mode 100644
+--- /dev/null
 +++ b/arch/arm64/um/os-Linux/registers.c
-@@ -1,66 +1,115 @@
- // SPDX-License-Identifier: GPL-2.0
- /*
-- * arch/arm64/um/os-Linux/registers.c
-- *
-- * Host-side register access for UML on arm64.
-- * Uses PTRACE_GETREGSET/SETREGSET with NT_PRSTATUS (arm64 has no
-- * PTRACE_GETREGS/PTRACE_SETREGS).
+@@ -0,0 +1,115 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
 + * arch/arm64/um/os-Linux/registers.c — host-side register access for UML arm64.
-  */
- 
- #include <sys/ptrace.h>
- #include <sys/uio.h>
++ */
++
++#include <sys/ptrace.h>
++#include <sys/uio.h>
 +#include <sys/user.h>
- #include <elf.h>
- #include <errno.h>
- #include <string.h>
++#include <elf.h>
++#include <errno.h>
++#include <string.h>
 +#include <stdlib.h>
- #include "os.h"
- #include "registers.h"
- #include "skas/skas.h"
++#include "os.h"
++#include "registers.h"
++#include "skas/skas.h"
 +#include <longjmp.h>
 +#include <sysdep/archsetjmp.h>
- 
--struct host_regs {
--	unsigned long long regs[31];
--	unsigned long long sp;
--	unsigned long long pc;
--	unsigned long long pstate;
--};
++#include <sysdep/ptrace_user.h>
++
 +/* ── GP register access (struct user_pt_regs via NT_PRSTATUS) ─────────────── */
- 
- int save_registers(int pid, struct uml_pt_regs *regs)
- {
--	struct iovec iov = {
--		.iov_base = &regs->gp,
--		.iov_len  = sizeof(struct host_regs),
++
++int save_registers(int pid, struct uml_pt_regs *regs)
++{
 +	struct iovec iov = {
 +		.iov_base = regs->gp,
 +		.iov_len  = sizeof(regs->gp),
- 	};
--	int ret;
--
--	ret = ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov);
--	if (ret < 0)
-+	if (ptrace(PTRACE_GETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
- 		return -errno;
- 	return 0;
- }
- 
- int restore_registers(int pid, struct uml_pt_regs *regs)
- {
--	struct iovec iov = {
--		.iov_base = &regs->gp,
--		.iov_len  = sizeof(struct host_regs),
-+	struct iovec iov = {
-+		.iov_base = regs->gp,
-+		.iov_len  = sizeof(regs->gp),
- 	};
--	int ret;
--
--	ret = ptrace(PTRACE_SETREGSET, pid, (void *)NT_PRSTATUS, &iov);
--	if (ret < 0)
-+	if (ptrace(PTRACE_SETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
- 		return -errno;
- 	return 0;
- }
- 
--int get_fp_registers(int pid, unsigned long *regs)
-+/*
-+ * ptrace_getregs / ptrace_setregs — called by arch/um/os-Linux/registers.c
-+ * init_pid_registers().  On arm64 we route through the GETREGSET path.
-+ */
-+int ptrace_getregs(long pid, unsigned long *regs_out)
- {
--	return 0;
-+	struct iovec iov = {
-+		.iov_base = regs_out,
-+		.iov_len  = 34 * sizeof(unsigned long long), /* 31+sp+pc+pstate */
 +	};
 +	if (ptrace(PTRACE_GETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
 +		return -errno;
 +	return 0;
- }
- 
--int put_fp_registers(int pid, unsigned long *regs)
++}
++
++int restore_registers(int pid, struct uml_pt_regs *regs)
++{
++	struct iovec iov = {
++		.iov_base = regs->gp,
++		.iov_len  = sizeof(regs->gp),
++	};
++	if (ptrace(PTRACE_SETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
++		return -errno;
++	return 0;
++}
++
++/*
++ * ptrace_getregs / ptrace_setregs — called by arch/um/os-Linux/registers.c
++ * init_pid_registers(). On arm64 we route through GETREGSET.
++ */
++int ptrace_getregs(long pid, unsigned long *regs_out)
++{
++	struct iovec iov = {
++		.iov_base = regs_out,
++		.iov_len  = 34 * sizeof(unsigned long long),
++	};
++	if (ptrace(PTRACE_GETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
++		return -errno;
++	return 0;
++}
++
 +int ptrace_setregs(long pid, unsigned long *regs_in)
- {
--	return 0;
++{
 +	struct iovec iov = {
 +		.iov_base = regs_in,
 +		.iov_len  = 34 * sizeof(unsigned long long),
@@ -114,9 +80,9 @@ diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registe
 +	if (ptrace(PTRACE_SETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
 +		return -errno;
 +	return 0;
- }
- 
-+/* ── FP/SIMD register access (struct user_fpsimd_state via NT_PRFPREG) ─────── */
++}
++
++/* ── FP/SIMD register access (struct user_fpsimd_state via NT_PRFPREG) ──── */
 +
 +int get_fp_registers(int pid, unsigned long *regs)
 +{
@@ -140,17 +106,17 @@ diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registe
 +	return 0;
 +}
 +
-+/* ── arch_init_registers ────────────────────────────────────────────────────── */
++/* ── arch_init_registers ─────────────────────────────────────────────────── */
 +
- void arch_init_registers(int pid)
- {
++void arch_init_registers(int pid)
++{
 +	/*
-+	 * Nothing to probe on arm64 — FP/SIMD is always present (ARMv8 mandates
-+	 * NEON/FP). We could probe SVE here in future.
++	 * Nothing to probe — FP/SIMD is mandatory on ARMv8.
++	 * SVE probing can be added here in future.
 +	 */
 +}
 +
-+/* ── get_thread_reg — jmp_buf accessor for UML context switch ─────────────── */
++/* ── get_thread_reg — jmp_buf accessor for UML context switch ────────────── */
 +
 +unsigned long get_thread_reg(int reg, jmp_buf *buf)
 +{
@@ -163,4 +129,4 @@ diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registe
 +		printk(UM_KERN_ERR "get_thread_reg: unknown reg %d\n", reg);
 +		return 0;
 +	}
- }
++}
