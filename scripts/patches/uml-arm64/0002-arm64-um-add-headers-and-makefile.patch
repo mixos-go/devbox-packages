@@ -5,7 +5,7 @@ diff --git a/arch/arm64/um/Makefile b/arch/arm64/um/Makefile
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/Makefile
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,25 @@
 +# SPDX-License-Identifier: GPL-2.0
 +obj-y = signal.o \
 +        stub_segv.o \
@@ -17,13 +17,18 @@ new file mode 100644
 +
 +UNPROFILE_OBJS := stub_segv.o
 +
-+# user_constants.h is generated from user-offsets.s (like x86/um)
++# Generate user_constants.h from user-offsets.s (same mechanism as x86/um)
 +$(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS) \
 +	-Iarch/arm64/include/generated
 +targets += user-offsets.s
 +
 +include/generated/user_constants.h: $(obj)/user-offsets.s FORCE
 +	$(call filechk,offsets,__USER_CONSTANT_H__)
++
++# archheaders: generate arm64-specific headers (cpucap-defs.h, sysreg-defs.h)
++# called by arch/um/Makefile archheaders rule via ARCH=$(HEADER_ARCH)
++archheaders:
++	$(Q)$(MAKE) $(build)=arch/arm64/tools kapi
 +
 +include $(srctree)/arch/um/scripts/Makefile.rules
 diff --git a/arch/arm64/um/os-Linux/Makefile b/arch/arm64/um/os-Linux/Makefile
