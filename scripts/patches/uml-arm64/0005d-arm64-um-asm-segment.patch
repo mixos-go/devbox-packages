@@ -1,0 +1,17 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add asm/segment.h stub
+
+arm64 has no GDT/TLS segments (x86-specific concept).
+Stub required because arch/um/include/asm/thread_info.h includes it unconditionally.
+
+--- /dev/null
++++ b/arch/arm64/um/asm/segment.h
+@@ -0,0 +1,8 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* arm64 has no GDT/TLS segments — stub for UML build compatibility */
++#ifndef __UM_SEGMENT_ARM64_H
++#define __UM_SEGMENT_ARM64_H
++
++/* arm64 does not use GDT entries or TLS segments like x86 */
++
++#endif
