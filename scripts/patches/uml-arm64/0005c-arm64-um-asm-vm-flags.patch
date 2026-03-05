@@ -1,0 +1,18 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add asm/vm-flags.h
+
+--- /dev/null
++++ b/arch/arm64/um/asm/vm-flags.h
+@@ -0,0 +1,12 @@
++/*
++ * Copyright (C) 2004 Jeff Dike (jdike@addtoit.com)
++ * Copyright 2003 PathScale, Inc.
++ * Licensed under the GPL
++ */
++
++#ifndef __VM_FLAGS_ARM64_H
++#define __VM_FLAGS_ARM64_H
++
++#define VM_STACK_DEFAULT_FLAGS (VM_GROWSDOWN | VM_DATA_FLAGS_EXEC)
++
++#endif
