@@ -1,0 +1,76 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add stubs bugs/mem/sysrq/tls
+--- /dev/null
++++ b/arch/arm64/um/bugs.c
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0
++/* arm64 UML: CPU bug checks and signal examination stubs */
++#include <arch.h>
++#include <sysdep/ptrace.h>
++
++void arch_check_bugs(void)
++{
++}
++
++void arch_examine_signal(int sig, struct uml_pt_regs *regs)
++{
++}
++
++void arch_init_registers(int pid)
++{
++}
+--- /dev/null
++++ b/arch/arm64/um/mem.c
+@@ -0,0 +1,8 @@
++// SPDX-License-Identifier: GPL-2.0
++/* arm64 UML: VMA name helper (no vDSO in arm64 UML) */
++#include <linux/mm.h>
++
++const char *arch_vma_name(struct vm_area_struct *vma)
++{
++	return NULL;
++}
+--- /dev/null
++++ b/arch/arm64/um/sysrq.c
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: GPL-2.0
++/* arm64 UML: show_regs - dump guest register state */
++#include <linux/kernel.h>
++#include <linux/sched.h>
++#include <asm/ptrace.h>
++
++void show_regs(struct pt_regs *regs)
++{
++	int i;
++
++	printk(KERN_INFO "\n");
++	printk(KERN_INFO "pc : %016lx  sp : %016lx\n",
++	       PT_REGS_IP(regs), PT_REGS_SP(regs));
++	printk(KERN_INFO "pstate: %016lx\n",
++	       regs->regs.gp[HOST_PSTATE]);
++	for (i = 0; i < 30; i += 2) {
++		printk(KERN_INFO "x%-2d: %016lx  x%-2d: %016lx\n",
++		       i,   regs->regs.gp[i],
++		       i+1, regs->regs.gp[i+1]);
++	}
++	printk(KERN_INFO "x30: %016lx\n", regs->regs.gp[30]);
++}
+--- /dev/null
++++ b/arch/arm64/um/tls.c
+@@ -0,0 +1,16 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arm64 UML TLS support.
++ * arm64 uses TPIDR_EL0 for TLS, not GDT segments (x86).
++ * The host kernel saves/restores TPIDR_EL0 via PTRACE_SETREGSET.
++ */
++#include <linux/sched.h>
++
++void clear_flushed_tls(struct task_struct *task)
++{
++}
++
++int arch_set_tls(struct task_struct *t, unsigned long tls)
++{
++	return 0;
++}

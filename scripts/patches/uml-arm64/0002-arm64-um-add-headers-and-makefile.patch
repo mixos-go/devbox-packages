@@ -5,12 +5,18 @@ diff --git a/arch/arm64/um/Makefile b/arch/arm64/um/Makefile
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/Makefile
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,31 @@
 +# SPDX-License-Identifier: GPL-2.0
-+obj-y = signal.o \
++obj-y = bugs.o \
++        mem.o \
++        ptrace.o \
++        signal.o \
 +        stub_segv.o \
 +        sys_call_table.o \
++        syscalls.o \
++        sysrq.o \
 +        task_size.o \
++        tls.o \
 +        user-offsets.o
 +
 +obj-y  += os-Linux/
@@ -152,34 +158,27 @@ diff --git a/arch/arm64/um/asm/ptrace.h b/arch/arm64/um/asm/ptrace.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/ptrace.h
-@@ -0,0 +1,29 @@
+@@ -0,0 +1,22 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * arm64/um/asm/ptrace.h — included as <asm/ptrace.h> for ARCH=um SUBARCH=arm64
++ *
++ * Must pull in ptrace-generic.h which defines struct pt_regs for UML.
++ * The native arm64 ptrace.h is not suitable here.
++ */
 +#ifndef __UM_PTRACE_ARM64_H
 +#define __UM_PTRACE_ARM64_H
 +
-+#include <asm/arch_regs.h>
++/* Pull in UML common ptrace defs: struct pt_regs, EMPTY_REGS, etc. */
++#include <asm/ptrace-generic.h>
 +
-+/*
-+ * UML ptrace interface for arm64.
-+ * The UML kernel reads/writes guest registers via these macros.
-+ * PT_* offsets must match the layout of struct arch_regs above.
-+ */
-+
-+#define PT_REGS_IP(r)    REGS_IP((r)->regs)
-+#define PT_REGS_SP(r)    REGS_SP((r)->regs)
-+
++/* arm64-specific extras not in ptrace-generic.h */
 +#define PT_FIX_EXEC_STACK(sp)  do { } while (0)
 +
-+/* Instruction pointer is pc field */
-+#define instruction_pointer(regs)  ((regs)->regs.pc)
-+#define user_stack_pointer(regs)   ((regs)->regs.sp)
++#define user_stack_pointer(regs)   UPT_SP(&(regs)->regs)
 +#define profile_pc(regs)           instruction_pointer(regs)
 +
-+/* user_mode: true if pt_regs represents userspace context */
-+#define user_mode(r)   UPT_IS_USER(&(r)->regs)
-+
-+#define MAX_REG_OFFSET  (offsetof(struct arch_regs, pstate))
-+#define MAX_REG_NR      ((MAX_REG_OFFSET / sizeof(long)) + 1)
++#define MAX_REG_OFFSET  (offsetof(struct uml_pt_regs, fp))
 +
 +#endif /* __UM_PTRACE_ARM64_H */
 diff --git a/arch/arm64/um/user-offsets.c b/arch/arm64/um/user-offsets.c

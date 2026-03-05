@@ -1,0 +1,72 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add ptrace.c
+--- /dev/null
++++ b/arch/arm64/um/ptrace.c
+@@ -0,0 +1,67 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/ptrace.c
++ *
++ * arm64 register layout in uml_pt_regs.gp[]:
++ *   gp[0..30]  = x0..x30
++ *   gp[31]     = sp   (HOST_SP)
++ *   gp[32]     = pc   (HOST_PC)
++ *   gp[33]     = pstate (HOST_PSTATE)
++ */
++#include <linux/mm.h>
++#include <linux/sched.h>
++#include <linux/errno.h>
++#include <linux/uaccess.h>
++#include <asm/ptrace.h>
++#include <registers.h>
++
++#define ARM64_PTRACE_REGS_SIZE  (34 * sizeof(unsigned long))
++
++int putreg(struct task_struct *child, int regno, unsigned long value)
++{
++	unsigned int idx = regno / sizeof(unsigned long);
++
++	if (regno < 0 || regno >= (int)ARM64_PTRACE_REGS_SIZE)
++		return -EIO;
++	if (regno & (sizeof(unsigned long) - 1))
++		return -EIO;
++	child->thread.regs.regs.gp[idx] = value;
++	return 0;
++}
++
++unsigned long getreg(struct task_struct *child, int regno)
++{
++	unsigned int idx = regno / sizeof(unsigned long);
++
++	if (regno < 0 || regno >= (int)ARM64_PTRACE_REGS_SIZE)
++		return 0;
++	if (regno & (sizeof(unsigned long) - 1))
++		return 0;
++	return child->thread.regs.regs.gp[idx];
++}
++
++int poke_user(struct task_struct *child, long addr, long data)
++{
++	if ((addr & (sizeof(long) - 1)) || addr < 0)
++		return -EIO;
++	if (addr < (long)ARM64_PTRACE_REGS_SIZE)
++		return putreg(child, addr, data);
++	return -EIO;
++}
++
++int peek_user(struct task_struct *child, long addr, long data)
++{
++	unsigned long tmp = 0;
++
++	if ((addr & (sizeof(long) - 1)) || addr < 0)
++		return -EIO;
++	if (addr < (long)ARM64_PTRACE_REGS_SIZE)
++		tmp = getreg(child, addr);
++	return put_user(tmp, (unsigned long __user *)data);
++}
++
++long subarch_ptrace(struct task_struct *child, long request,
++		    unsigned long addr, unsigned long data)
++{
++	return -EIO;
++}

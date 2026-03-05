@@ -1,0 +1,30 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add syscalls.c
+--- /dev/null
++++ b/arch/arm64/um/syscalls.c
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/syscalls.c
++ * mmap syscall and arch_switch_to for arm64 UML.
++ */
++#include <linux/sched.h>
++#include <linux/mm.h>
++#include <linux/syscalls.h>
++
++SYSCALL_DEFINE6(mmap, unsigned long, addr, unsigned long, len,
++		unsigned long, prot, unsigned long, flags,
++		unsigned long, fd, unsigned long, off)
++{
++	if (off & ~PAGE_MASK)
++		return -EINVAL;
++	return ksys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
++}
++
++void arch_switch_to(struct task_struct *to)
++{
++	/*
++	 * TPIDR_EL0 (thread pointer) is saved/restored by the host kernel
++	 * during context switch. Nothing extra needed here.
++	 */
++}
