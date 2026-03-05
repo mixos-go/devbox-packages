@@ -1,0 +1,220 @@
+name: Build DevBox
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'scripts/build-debian-image.sh'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: "Architecture (aarch64 | x86_64 | all)"
+        required: false
+        default: "all"
+      target:
+        description: "What to build (rootfs | kernel | all)"
+        required: false
+        default: "all"
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+# ── Matrix config ────────────────────────────────────────────────────────────
+# UML cannot be cross-compiled — ARCH=um always targets the host CPU's ABI.
+# Each arch must be built natively on its own runner.
+#
+#   aarch64 → ubuntu-24.04-arm  (GitHub-hosted ARM64)
+#   x86_64  → ubuntu-24.04      (GitHub-hosted x86_64)
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+
+  # ── Build rootfs ────────────────────────────────────────────────────────────
+  build-rootfs:
+    name: Rootfs (${{ matrix.arch }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            debootstrap qemu-user-static binfmt-support \
+            libguestfs-tools qemu-utils
+
+      - name: Build Debian rootfs (${{ matrix.arch }})
+        run: |
+          chmod +x scripts/build-debian-image.sh
+          sudo ./scripts/build-debian-image.sh ${{ matrix.arch }} --rootfs-only
+
+      - name: Upload rootfs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-${{ matrix.arch }}
+          path: output/debian-rootfs-${{ matrix.arch }}.img
+          retention-days: 3
+
+  # ── Build kernel ────────────────────────────────────────────────────────────
+  build-kernel:
+    name: Kernel (${{ matrix.arch }})
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            build-essential flex bison libssl-dev libelf-dev bc
+
+      - name: Build UML kernel (${{ matrix.arch }})
+        run: |
+          chmod +x scripts/build-debian-image.sh
+          sudo ./scripts/build-debian-image.sh ${{ matrix.arch }} --kernel-only
+
+      - name: Upload kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.arch }}
+          path: output/linux-uml-${{ matrix.arch }}
+          retention-days: 3
+
+  # ── Publish rootfs → image-YYYY-MM-DD ──────────────────────────────────
+  publish-rootfs:
+    name: Publish rootfs
+    permissions:
+      contents: write
+    needs: build-rootfs
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download rootfs artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rootfs-*
+          merge-multiple: true
+          path: ./output
+
+      - name: List output
+        run: ls -lh output/
+
+      - name: Publish to image-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUILT_AT="$(date '+%Y-%m-%d %H:%M UTC')"
+          DATE_TAG="image-$(date '+%Y-%m-%d')"
+
+          # Update rolling image-latest tag
+          git push origin :refs/tags/image-latest 2>/dev/null || true
+          gh release create image-latest \
+            --title "Image (latest) — ${BUILT_AT}" \
+            --notes "Debian bookworm rootfs for DevBox.
+
+          **Built:** ${BUILT_AT}
+          **Commit:** ${{ github.sha }}
+
+          Files:
+          - \`debian-rootfs-aarch64.img\` — ARM64 rootfs (~400MB sparse ext4)
+          - \`debian-rootfs-x86_64.img\`  — x86_64 rootfs (~400MB sparse ext4)
+
+          Downloaded by DevBox app on first launch.
+          Use directly: \`ubd0=debian-rootfs-aarch64.img\` — no decompression needed.
+
+          > Rolling tag — always points to latest build." \
+            --prerelease
+
+          for f in output/debian-rootfs-*.img; do
+            gh release upload image-latest "$f" --clobber
+          done
+
+  # ── Publish kernel → kernel-vX.Y.Z ─────────────────────────────────────────
+  publish-kernel:
+    name: Publish kernel
+    permissions:
+      contents: write
+    needs: build-kernel
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download kernel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: kernel-*
+          merge-multiple: true
+          path: ./output
+
+      - name: List output
+        run: ls -lh output/
+
+      - name: Read kernel version
+        id: kver
+        run: |
+          # Extract version from binary if available, else from build script
+          VER=$(grep 'KERNEL_VERSION=' scripts/build-debian-image.sh | head -1 | cut -d= -f2 | tr -d '"')
+          echo "version=${VER}" >> $GITHUB_OUTPUT
+
+      - name: Publish to kernel-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BUILT_AT="$(date '+%Y-%m-%d %H:%M UTC')"
+          KVER="${{ steps.kver.outputs.version }}"
+
+          git push origin :refs/tags/kernel-latest 2>/dev/null || true
+          gh release create kernel-latest \
+            --title "UML Kernel ${KVER} (latest) — ${BUILT_AT}" \
+            --notes "User Mode Linux kernel for DevBox.
+
+          **Kernel:** Linux ${KVER}
+          **Built:** ${BUILT_AT}
+          **Commit:** ${{ github.sha }}
+
+          Files:
+          - \`linux-uml-aarch64\` — UML kernel binary for ARM64 Android
+          - \`linux-uml-x86_64\`  — UML kernel binary for x86_64
+
+          Bundled inside DevBox APK (assets/). Extracted on first launch.
+          No KVM needed. No root needed. Runs entirely in userspace via ptrace.
+
+          > Rolling tag — always points to latest build." \
+            --prerelease
+
+          for f in output/linux-uml-*; do
+            gh release upload kernel-latest "$f" --clobber
+          done

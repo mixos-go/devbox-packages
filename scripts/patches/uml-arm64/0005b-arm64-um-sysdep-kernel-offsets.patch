@@ -1,0 +1,21 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 5b/13] arm64: um: add sysdep/kernel-offsets.h
+
+--- /dev/null
++++ b/arch/arm64/um/shared/sysdep/kernel-offsets.h
+@@ -0,0 +1,15 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#include <linux/stddef.h>
++#include <linux/sched.h>
++#include <linux/elf.h>
++#include <linux/crypto.h>
++#include <linux/kbuild.h>
++#include <asm/mman.h>
++
++/* workaround for a warning with -Wmissing-prototypes */
++void foo(void);
++
++void foo(void)
++{
++#include <common-offsets.h>
++}

@@ -5,7 +5,7 @@
 # no /dev/kvm, no root, works on Android 11+ (and any Android).
 #
 # Output in ./output/:
-#   debian-rootfs-{arch}.img.gz  — Debian bookworm rootfs
+#   debian-rootfs-{arch}.img      — Debian bookworm rootfs (sparse ext4, no compression)
 #   linux-uml-{arch}             — UML kernel binary (ELF, runs as process)
 #
 # Requirements (install on whichever native runner you use):
@@ -52,7 +52,6 @@ build_rootfs() {
     esac
 
     local raw_img="$OUTPUT_DIR/debian-rootfs-${arch}.img"
-    local gz_img="${raw_img}.gz"
 
     log "Building Debian ${DEBIAN_SUITE} rootfs for ${arch}..."
 
@@ -69,11 +68,19 @@ build_rootfs() {
     log "Running debootstrap (${deb_arch})..."
     sudo debootstrap \
         --arch="$deb_arch" \
-        --include="openssh-server,curl,socat,sudo,bash,zsh,coreutils,util-linux,net-tools,iproute2,procps,less,vim-tiny,python3,python3-pip,git,wget,ca-certificates" \
+        --include="openssh-server,curl,socat,sudo,bash,zsh,coreutils,util-linux,net-tools,iproute2,procps,less,vim-tiny,ca-certificates,wget" \
         "$DEBIAN_SUITE" "$mnt" "https://deb.debian.org/debian"
 
     log "Configuring rootfs..."
     echo "devbox" | sudo tee "$mnt/etc/hostname" >/dev/null
+
+    # UML block device is /dev/ubda — fstab must reference it
+    sudo tee "$mnt/etc/fstab" >/dev/null <<'FSTAB'
+/dev/ubda   /       ext4    errors=remount-ro   0   1
+proc        /proc   proc    defaults            0   0
+sysfs       /sys    sysfs   defaults            0   0
+tmpfs       /tmp    tmpfs   size=128M           0   0
+FSTAB
 
     # UML uses slirp for networking — eth0 via DHCP works out of the box
     sudo tee "$mnt/etc/network/interfaces" >/dev/null <<'NET'
@@ -125,10 +132,10 @@ ZSHRC
     [[ -n "$qemu_arch" ]] && sudo rm -f "$mnt/usr/bin/qemu-${qemu_arch}-static"
     sudo umount "$mnt"; rmdir "$mnt"
 
-    log "Compressing rootfs (${arch})..."
-    gzip -9 -c "$raw_img" > "$gz_img"
-    rm -f "$raw_img"
-    log "Done: $gz_img ($(du -sh "$gz_img" | cut -f1))"
+    # Upload raw sparse .img — no compression needed.
+    # Sparse ext4: only written blocks count, zeros not stored on disk.
+    # APK uses directly: ubd0=debian-rootfs.img (no decompression step)
+    log "Done: $raw_img ($(du -sh "$raw_img" | cut -f1) on disk)"
 }
 
 # ── Build UML kernel ────────────────────────────────────────────────────────────
@@ -226,13 +233,32 @@ KCONFIG
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+# Usage:
+#   ./build-debian-image.sh [arch] [--rootfs-only | --kernel-only]
+#
+#   arch           aarch64 | x86_64 | all  (default: all)
+#   --rootfs-only  build rootfs only  → output: debian-rootfs-{arch}.img
+#   --kernel-only  build kernel only  → output: linux-uml-{arch}
+#   (no flag)      build both
+# ─────────────────────────────────────────────────────────────────────────────
+
+TARGET="all"   # all | rootfs | kernel
+for arg in "$@"; do
+    case "$arg" in
+        --rootfs-only) TARGET="rootfs" ;;
+        --kernel-only) TARGET="kernel" ;;
+    esac
+done
 
 check_deps
 
 build_arch() {
     local arch="$1"
-    build_rootfs "$arch"
-    build_uml_kernel "$arch"
+    case "$TARGET" in
+        rootfs) build_rootfs "$arch" ;;
+        kernel) build_uml_kernel "$arch" ;;
+        all)    build_rootfs "$arch"; build_uml_kernel "$arch" ;;
+    esac
 }
 
 case "$ARCH" in
@@ -243,12 +269,10 @@ case "$ARCH" in
         build_arch x86_64
         ;;
     *)
-        die "Usage: $0 [aarch64|x86_64|all]"
+        die "Usage: $0 [aarch64|x86_64|all] [--rootfs-only|--kernel-only]"
         ;;
 esac
 
 log ""
 log "=== Output files ==="
-ls -lh "$OUTPUT_DIR"/
-log ""
-log "Upload all to: github.com/mixos-go/devbox-packages — release tag: debian-latest"
+ls -lh "$OUTPUT_DIR"/ 
