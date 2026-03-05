@@ -152,7 +152,7 @@ diff --git a/arch/arm64/um/asm/ptrace.h b/arch/arm64/um/asm/ptrace.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/ptrace.h
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,29 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_PTRACE_ARM64_H
 +#define __UM_PTRACE_ARM64_H
@@ -174,6 +174,9 @@ new file mode 100644
 +#define instruction_pointer(regs)  ((regs)->regs.pc)
 +#define user_stack_pointer(regs)   ((regs)->regs.sp)
 +#define profile_pc(regs)           instruction_pointer(regs)
++
++/* user_mode: true if pt_regs represents userspace context */
++#define user_mode(r)   UPT_IS_USER(&(r)->regs)
 +
 +#define MAX_REG_OFFSET  (offsetof(struct arch_regs, pstate))
 +#define MAX_REG_NR      ((MAX_REG_OFFSET / sizeof(long)) + 1)

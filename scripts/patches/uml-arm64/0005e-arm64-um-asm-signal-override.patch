@@ -6,7 +6,7 @@ THREAD_SIZE etc. that conflict with UML's own definitions. Override for UML.
 
 --- /dev/null
 +++ b/arch/arm64/um/asm/signal.h
-@@ -0,0 +1,12 @@
+@@ -0,0 +1,13 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +/*
 + * UML override for arm64 asm/signal.h.
