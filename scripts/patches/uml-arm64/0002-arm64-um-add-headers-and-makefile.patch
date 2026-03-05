@@ -5,16 +5,27 @@ diff --git a/arch/arm64/um/Makefile b/arch/arm64/um/Makefile
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/Makefile
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,20 @@
 +# SPDX-License-Identifier: GPL-2.0
-+obj-y  = signal.o \
-+          stub_segv.o \
-+          sys_call_table.o \
-+          task_size.o
++obj-y = signal.o \
++        stub_segv.o \
++        sys_call_table.o \
++        task_size.o \
++        user-offsets.o
 +
 +obj-y  += os-Linux/
 +
 +UNPROFILE_OBJS := stub_segv.o
++
++# user_constants.h is generated from user-offsets.s (like x86/um)
++$(obj)/user-offsets.s: c_flags = -Wp,-MD,$(depfile) $(USER_CFLAGS) \
++	-Iarch/arm64/include/generated
++targets += user-offsets.s
++
++include/generated/user_constants.h: $(obj)/user-offsets.s FORCE
++	$(call filechk,offsets,__USER_CONSTANT_H__)
++
++include $(srctree)/arch/um/scripts/Makefile.rules
 diff --git a/arch/arm64/um/os-Linux/Makefile b/arch/arm64/um/os-Linux/Makefile
 new file mode 100644
 --- /dev/null
@@ -155,3 +166,58 @@ new file mode 100644
 +#define MAX_REG_NR      ((MAX_REG_OFFSET / sizeof(long)) + 1)
 +
 +#endif /* __UM_PTRACE_ARM64_H */
+diff --git a/arch/arm64/um/user-offsets.c b/arch/arm64/um/user-offsets.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/user-offsets.c
+@@ -0,0 +1,50 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/user-offsets.c
++ * Generates include/generated/user_constants.h via the offsets mechanism.
++ * Defines HOST_* constants that encode arm64 register layout for UML.
++ */
++#include <stdio.h>
++#include <stddef.h>
++#include <signal.h>
++#include <poll.h>
++#include <sys/mman.h>
++#include <asm/ptrace.h>
++#include <asm/types.h>
++#include <linux/kbuild.h>
++
++/* suppress -Wmissing-prototypes */
++void foo(void);
++
++void foo(void)
++{
++	/*
++	 * struct user_pt_regs layout (NT_PRSTATUS):
++	 *   regs[31]  = x0..x30   (offsets 0..240, step 8)
++	 *   sp        = offset 248 → index 31
++	 *   pc        = offset 256 → index 32
++	 *   pstate    = offset 264 → index 33
++	 */
++	DEFINE(HOST_SP,      offsetof(struct user_pt_regs, sp)     / sizeof(unsigned long));
++	DEFINE(HOST_PC,      offsetof(struct user_pt_regs, pc)     / sizeof(unsigned long));
++	DEFINE(HOST_PSTATE,  offsetof(struct user_pt_regs, pstate) / sizeof(unsigned long));
++
++	/*
++	 * struct user_fpsimd_state layout (NT_PRFPREG):
++	 *   vregs[32]   = 512 bytes
++	 *   fpsr + fpcr = 8 bytes
++	 *   __reserved  = 8 bytes
++	 *   Total: 528 bytes → 66 unsigned longs
++	 */
++	DEFINE(HOST_FP_SIZE, sizeof(struct user_fpsimd_state) / sizeof(unsigned long));
++
++	DEFINE(UM_FRAME_SIZE, sizeof(struct user_pt_regs));
++
++	DEFINE(UM_POLLIN,    POLLIN);
++	DEFINE(UM_POLLPRI,   POLLPRI);
++	DEFINE(UM_POLLOUT,   POLLOUT);
++
++	DEFINE(UM_PROT_READ,  PROT_READ);
++	DEFINE(UM_PROT_WRITE, PROT_WRITE);
++	DEFINE(UM_PROT_EXEC,  PROT_EXEC);
++}
