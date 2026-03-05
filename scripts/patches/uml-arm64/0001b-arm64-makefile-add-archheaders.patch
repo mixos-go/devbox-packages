@@ -1,0 +1,15 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH 1b/13] arm64: add archheaders target to generate cpucap-defs.h
+
+--- a/arch/arm64/Makefile	2026-03-05 10:11:24.388217484 +0000
++++ b/arch/arm64/Makefile	2026-03-05 10:11:24.388217484 +0000
+@@ -199,6 +199,9 @@
+ install zinstall:
+ 	$(call cmd,install)
+ 
++archheaders:
++	$(Q)$(MAKE) $(build)=arch/arm64/tools kapi
++
+ archprepare:
+ 	$(Q)$(MAKE) $(build)=arch/arm64/tools kapi
+ ifeq ($(CONFIG_ARM64_ERRATUM_843419),y)
