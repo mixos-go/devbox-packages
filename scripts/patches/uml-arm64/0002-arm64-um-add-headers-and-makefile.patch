@@ -45,12 +45,16 @@ diff --git a/arch/arm64/um/asm/arch_regs.h b/arch/arm64/um/asm/arch_regs.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/arch_regs.h
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,54 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_ARCH_REGS_ARM64_H
 +#define __UM_ARCH_REGS_ARM64_H
 +
++/* asm-offsets.h is generated from this very compilation unit - guard against
++ * circular inclusion when COMPILE_OFFSETS is defined (arch/um/kernel/asm-offsets.c) */
++#ifndef COMPILE_OFFSETS
 +#include <generated/asm-offsets.h>
++#endif
 +
 +/*
 + * arm64 UML host register file.
@@ -100,7 +104,7 @@ diff --git a/arch/arm64/um/asm/elf.h b/arch/arm64/um/asm/elf.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/elf.h
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,43 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_ELF_ARM64_H
 +#define __UM_ELF_ARM64_H
@@ -116,6 +120,10 @@ new file mode 100644
 +#define ELF_DATA           ELFDATA2LSB
 +
 +#define ELF_PLATFORM       "aarch64"
++
++/* arm64 has no vsyscall page */
++#define FIXADDR_USER_START     0
++#define FIXADDR_USER_END       0
 +
 +/* arm64 has no FPU-disable bit in AT_HWCAP that we need to mask */
 +#define ELF_HWCAP          (0)
@@ -226,3 +234,4 @@ new file mode 100644
 +	DEFINE(UM_PROT_WRITE, PROT_WRITE);
 +	DEFINE(UM_PROT_EXEC,  PROT_EXEC);
 +}
+

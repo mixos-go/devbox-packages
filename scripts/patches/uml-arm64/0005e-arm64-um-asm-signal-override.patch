@@ -1,0 +1,22 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add asm/signal.h override to prevent memory.h conflict
+
+arm64's native asm/signal.h pulls in asm/memory.h which defines PAGE_OFFSET,
+THREAD_SIZE etc. that conflict with UML's own definitions. Override for UML.
+
+--- /dev/null
++++ b/arch/arm64/um/asm/signal.h
+@@ -0,0 +1,12 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * UML override for arm64 asm/signal.h.
++ * The native arm64 version pulls in asm/memory.h which conflicts with UML's
++ * own PAGE_OFFSET / THREAD_SIZE / __pa / __va definitions.
++ */
++#ifndef __UM_ARM64_ASM_SIGNAL_H
++#define __UM_ARM64_ASM_SIGNAL_H
++
++#include <uapi/asm/signal.h>
++#include <uapi/asm/siginfo.h>
++
++#endif
