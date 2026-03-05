@@ -1,18 +1,11 @@
 From: DevBox UML arm64 Port
 Subject: [PATCH 6/13] arm64/um: add os-Linux/registers.c with full GP + FP/SIMD + ptrace wrappers
 
-Full registers.c for arm64 UML:
-- save_registers/restore_registers via PTRACE_GETREGSET/NT_PRSTATUS
-- ptrace_getregs/ptrace_setregs wrappers (arm64 has no PTRACE_GETREGS)
-- get_fp_registers/put_fp_registers via NT_PRFPREG (FP/SIMD)
-- arch_init_registers (no-op, NEON always present on ARMv8)
-- get_thread_reg for jmp_buf context switch
-
 diff --git a/arch/arm64/um/os-Linux/registers.c b/arch/arm64/um/os-Linux/registers.c
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/os-Linux/registers.c
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,117 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * arch/arm64/um/os-Linux/registers.c — host-side register access for UML arm64.

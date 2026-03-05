@@ -1,15 +1,6 @@
 From: DevBox UML arm64 Port
 Subject: [PATCH 2/4] arm64/um: add arch headers and build Makefile
 
-UML requires per-SUBARCH headers under arch/$(SUBARCH)/um/asm/ that
-describe the host register layout, ELF type, and ptrace interface used
-by the UML kernel to inspect/modify guest process state.
-
-On arm64 the canonical register file is struct user_pt_regs (as exposed
-by ptrace GETREGSET / NT_PRSTATUS), which holds:
-  - regs[31]  : general-purpose registers x0..x30
-  - sp, pc    : stack pointer and program counter
-  - pstate    : CPSR/SPSR equivalent
 diff --git a/arch/arm64/um/Makefile b/arch/arm64/um/Makefile
 new file mode 100644
 --- /dev/null
@@ -93,7 +84,7 @@ diff --git a/arch/arm64/um/asm/elf.h b/arch/arm64/um/asm/elf.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/elf.h
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,39 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_ELF_ARM64_H
 +#define __UM_ELF_ARM64_H
@@ -137,7 +128,7 @@ diff --git a/arch/arm64/um/asm/ptrace.h b/arch/arm64/um/asm/ptrace.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/ptrace.h
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,26 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_PTRACE_ARM64_H
 +#define __UM_PTRACE_ARM64_H

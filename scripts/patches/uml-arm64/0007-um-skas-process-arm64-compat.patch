@@ -1,31 +1,9 @@
 From: DevBox UML arm64 Port
-Subject: [PATCH 7/9] um/os-Linux/skas/process.c: arm64 compat + PTRACE_SYSCALL fallback
+Subject: [PATCH 7/13] um/os-Linux/skas/process.c: arm64 compat + PTRACE_SYSCALL fallback
 
-Three related changes needed for arm64 / Android non-root support:
-
-1. PTRACE_GETREGS/SETREGS do not exist on arm64.
-   Replace direct ptrace(PTRACE_GETREGS/SETREGS) calls with
-   save_registers()/restore_registers() on arm64 via #ifdef __aarch64__.
-
-2. PTRACE_SYSEMU is blocked by Android SELinux (and is not implemented
-   in the arm64 kernel anyway).  Add a runtime fallback:
-
-   When sysemu_supported == 0, use PTRACE_SYSCALL two-stop mode:
-     - Entry stop  (SIGTRAP|0x80): save real syscall nr, replace with
-       __NR_getpid so the host executes something harmless, continue.
-     - Exit stop   (SIGTRAP|0x80): restore syscall nr, call handle_trap()
-       to dispatch the syscall inside UML, write return value, continue.
-
-   This is the same trick proot uses — Android SELinux allows
-   PTRACE_SYSCALL (used by proot/debuggers) but not PTRACE_SYSEMU.
-
-3. ptrace_dump_regs() uses PTRACE_GETREGS which doesn't exist on arm64.
-   Guard with #ifndef __aarch64__ and provide an GETREGSET alternative.
-
-diff --git a/arch/um/os-Linux/skas/process.c b/arch/um/os-Linux/skas/process.c
 --- a/arch/um/os-Linux/skas/process.c
 +++ b/arch/um/os-Linux/skas/process.c
-@@ -14,6 +14,10 @@
+@@ -16,6 +16,10 @@
  #include <as-layout.h>
  #include <init.h>
  #include <kern_util.h>
@@ -36,32 +14,25 @@ diff --git a/arch/um/os-Linux/skas/process.c b/arch/um/os-Linux/skas/process.c
  #include <mem.h>
  #include <os.h>
  #include <ptrace_user.h>
-@@ -23,6 +27,16 @@
+@@ -25,6 +29,9 @@
  #include <linux/threads.h>
  #include <timetravel.h>
  #include "../internal.h"
 +#include <asm/unistd.h>
 +
-+/*
-+ * sysemu_supported: set by check_sysemu() in start_up.c.
-+ *   1 = PTRACE_SYSEMU works (x86, non-Android arm64 with patched kernel)
-+ *   0 = fall back to PTRACE_SYSCALL two-stop mode (arm64 / Android)
-+ *
-+ * Declared extern here; defined and set in os-Linux/start_up.c.
-+ */
 +extern int sysemu_supported;
  
  int is_skas_winch(int pid, int fd, void *data)
  {
-@@ -32,6 +46,7 @@ int is_skas_winch(int pid, int fd, void *data)
- static const char *ptrace_reg_name(int idx)
+@@ -35,6 +42,7 @@
  {
  #define R(n) case HOST_##n: return #n
-+#ifndef __aarch64__
  
++#ifndef __aarch64__
  	switch (idx) {
  #ifdef __x86_64__
-@@ -62,6 +77,7 @@ static const char *ptrace_reg_name(int idx)
+ 	R(BX);
+@@ -77,6 +85,7 @@
  #endif
  	}
  	return "";
@@ -69,16 +40,14 @@ diff --git a/arch/um/os-Linux/skas/process.c b/arch/um/os-Linux/skas/process.c
  }
  
  static int ptrace_dump_regs(int pid)
-@@ -69,11 +85,28 @@ static int ptrace_dump_regs(int pid)
+@@ -84,14 +93,25 @@
  	unsigned long regs[MAX_REG_NR];
  	int i;
  
 +#ifdef __aarch64__
 +	{
-+		struct iovec iov = { .iov_base = regs,
-+				     .iov_len  = sizeof(regs) };
-+		if (ptrace(PTRACE_GETREGSET, pid, (void *)(long)NT_PRSTATUS,
-+			   &iov) < 0)
++		struct iovec iov = { .iov_base = regs, .iov_len = sizeof(regs) };
++		if (ptrace(PTRACE_GETREGSET, pid, (void *)(long)NT_PRSTATUS, &iov) < 0)
 +			return -errno;
 +	}
 +#else
@@ -98,67 +67,35 @@ diff --git a/arch/um/os-Linux/skas/process.c b/arch/um/os-Linux/skas/process.c
  	}
  
  	return 0;
-@@ -209,6 +242,24 @@ int start_userspace(unsigned long stub_stack)
+@@ -336,6 +356,15 @@
  	return err;
  }
  
-+/*
-+ * arm64 / PTRACE_SYSCALL fallback helpers.
-+ *
-+ * When sysemu_supported==0 we use PTRACE_SYSCALL (two stops per syscall):
-+ *   - at_syscall_entry: true  = we are at the entry stop
-+ *                       false = we are at the exit stop (or non-syscall stop)
-+ *
-+ * At entry stop we neutralise the syscall so the host executes something
-+ * harmless (__NR_getpid), then continue to the exit stop.
-+ * At exit stop we restore the original syscall number so handle_trap()
-+ * can dispatch it inside UML, then write the return value back.
-+ */
 +static bool at_syscall_entry;
 +static unsigned long saved_syscall_nr;
 +
 +static inline void arm64_neutralize_syscall(int pid, struct uml_pt_regs *regs)
 +{
-+	/* Replace real syscall nr with __NR_getpid — completely harmless */
 +	UPT_SYSCALL_NR(regs) = __NR_getpid;
-+	restore_registers(pid, regs); /* write modified regs to child */
++	restore_registers(pid, regs);
 +}
 +
  void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
  {
  	int err, status, op, pid = userspace_pid[0];
-@@ -225,16 +276,35 @@ void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
- 		if (err) {
- 			if (err == -ENOMEM)
- 				report_enomem();
--
- 			printk(UM_KERN_ERR "%s - Error flushing stub syscalls: %d",
- 				__func__, -err);
- 			fatal_sigsegv();
- 		}
- 
--		if (ptrace(PTRACE_SETREGS, pid, 0, regs->gp)) {
-+		/*
-+		 * Write guest GP registers back to the child process.
-+		 * x86: PTRACE_SETREGS  (takes flat array)
-+		 * arm64: PTRACE_SETREGSET/NT_PRSTATUS (struct user_pt_regs)
-+		 */
-+#ifdef __aarch64__
+@@ -368,7 +397,11 @@
+ 		 * fail.  In this case, there is nothing to do but
+ 		 * just kill the process.
+ 		 */
++		#ifdef __aarch64__
 +		if (restore_registers(pid, regs)) {
-+#else
-+		if (ptrace(PTRACE_SETREGS, pid, 0, regs->gp)) {
-+#endif
++		#else
+ 		if (ptrace(PTRACE_SETREGS, pid, 0, regs->gp)) {
++		#endif
  			printk(UM_KERN_ERR "%s - ptrace set regs failed, errno = %d\n",
  			       __func__, errno);
  			fatal_sigsegv();
- 		}
- 
-+		/*
-+		 * FP registers — same on all arches (arch-specific get/put).
-+		 */
- 		if (put_fp_registers(pid, regs->fp)) {
- 			printk(UM_KERN_ERR "%s - ptrace set fp regs failed, errno = %d\n",
- 			       __func__, errno);
+@@ -380,10 +413,11 @@
  			fatal_sigsegv();
  		}
  
@@ -166,90 +103,44 @@ diff --git a/arch/um/os-Linux/skas/process.c b/arch/um/os-Linux/skas/process.c
 -			op = PTRACE_SYSEMU_SINGLESTEP;
 -		else
 -			op = PTRACE_SYSEMU;
-+		/*
-+		 * Choose ptrace run operation:
-+		 *   sysemu_supported: use PTRACE_SYSEMU (one stop per syscall).
-+		 *   !sysemu_supported (arm64/Android): use PTRACE_SYSCALL.
-+		 *     - If we are at syscall entry, neutralise the syscall first
-+		 *       so the host runs something harmless; we'll dispatch the
-+		 *       real syscall at the exit stop.
-+		 *     - If we are at syscall exit (at_syscall_entry just flipped
-+		 *       to false by the handler below), the guest resumes normally.
-+		 */
 +		if (sysemu_supported) {
-+			op = singlestepping() ? PTRACE_SYSEMU_SINGLESTEP
-+					      : PTRACE_SYSEMU;
++			op = singlestepping() ? PTRACE_SYSEMU_SINGLESTEP : PTRACE_SYSEMU;
 +		} else {
 +			op = PTRACE_SYSCALL;
 +		}
  
  		if (ptrace(op, pid, 0, 0)) {
  			printk(UM_KERN_ERR "%s - ptrace continue failed, op = %d, errno = %d\n",
-@@ -252,12 +322,26 @@ void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
- 			fatal_sigsegv();
+@@ -399,7 +433,11 @@
  		}
  
-+		/*
-+		 * Read guest GP registers.
-+		 * x86: PTRACE_GETREGS; arm64: PTRACE_GETREGSET/NT_PRSTATUS.
-+		 */
-+#ifdef __aarch64__
+ 		regs->is_user = 1;
++		#ifdef __aarch64__
 +		if (save_registers(pid, regs)) {
-+#else
++		#else
  		if (ptrace(PTRACE_GETREGS, pid, 0, regs->gp)) {
-+#endif
++		#endif
  			printk(UM_KERN_ERR "%s - PTRACE_GETREGS failed, errno = %d\n",
  			       __func__, errno);
  			fatal_sigsegv();
- 		}
- 
- 		if (get_fp_registers(pid, regs->fp)) {
- 			printk(UM_KERN_ERR "%s -  get_fp_registers failed, errno = %d\n",
- 			       __func__, errno);
- 			fatal_sigsegv();
- 		}
-@@ -280,7 +364,40 @@ void userspace(struct uml_pt_regs *regs, unsigned long *aux_fp_regs)
- 
- 		case SIGTRAP + 0x80:
--			handle_trap(pid, regs);
-+			if (sysemu_supported) {
-+				/*
-+				 * PTRACE_SYSEMU path (x86 / non-Android):
-+				 * single stop, syscall not yet executed by host.
-+				 */
-+				handle_trap(pid, regs);
-+			} else {
-+				/*
-+				 * PTRACE_SYSCALL two-stop path (arm64 / Android):
-+				 *
-+				 * Entry stop: neutralise syscall, set flag, continue.
-+				 *   The host will execute __NR_getpid (harmless).
-+				 *
-+				 * Exit stop: restore original syscall nr, dispatch
-+				 *   through UML's handle_trap() which writes the
-+				 *   correct return value into x0, then resume guest.
-+				 */
-+				if (!at_syscall_entry) {
-+					/* ---- ENTRY STOP ---- */
-+					at_syscall_entry = true;
-+					saved_syscall_nr = UPT_SYSCALL_NR(regs);
-+					arm64_neutralize_syscall(pid, regs);
-+					/*
-+					 * Don't call handle_trap here.
-+					 * Loop back → PTRACE_SYSCALL → exit stop.
-+					 */
-+				} else {
-+					/* ---- EXIT STOP ---- */
-+					at_syscall_entry = false;
-+					/*
-+					 * Restore the real syscall nr so that
-+					 * handle_syscall() inside handle_trap()
-+					 * dispatches the correct syscall.
-+					 */
-+					UPT_SYSCALL_NR(regs) = saved_syscall_nr;
+@@ -442,7 +480,19 @@
+ 				else handle_segv(pid, regs, aux_fp_regs);
+ 				break;
+ 			case SIGTRAP + 0x80:
+-				handle_trap(pid, regs);
++				if (sysemu_supported) {
 +					handle_trap(pid, regs);
++				} else {
++					if (!at_syscall_entry) {
++						at_syscall_entry = true;
++						saved_syscall_nr = UPT_SYSCALL_NR(regs);
++						arm64_neutralize_syscall(pid, regs);
++					} else {
++						at_syscall_entry = false;
++						UPT_SYSCALL_NR(regs) = saved_syscall_nr;
++						handle_trap(pid, regs);
++					}
 +				}
-+			}
- 			break;
- 
- 		case SIGALRM:
+ 				break;
+ 			case SIGTRAP:
+ 				relay_signal(SIGTRAP, (struct siginfo *)&si, regs);

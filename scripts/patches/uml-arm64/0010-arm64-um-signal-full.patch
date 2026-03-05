@@ -1,17 +1,11 @@
 From: DevBox UML arm64 Port
 Subject: [PATCH 10/13] arm64/um: add signal.c — full setup_signal_stack_si + rt_sigreturn
 
-Complete arm64 rt_sigframe layout matching native arm64:
-  struct rt_sigframe { struct siginfo info; struct ucontext uc; }
-FP/SIMD saved in sigcontext.__reserved[] as fpsimd_context (FPSIMD_MAGIC).
-SP is 16-byte aligned per AAPCS64.
-SA_RESTORER always set by glibc on arm64 so no trampoline needed.
-
 diff --git a/arch/arm64/um/signal.c b/arch/arm64/um/signal.c
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/signal.c
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,180 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * arch/arm64/um/signal.c — UML rt_sigframe setup for arm64 guests.

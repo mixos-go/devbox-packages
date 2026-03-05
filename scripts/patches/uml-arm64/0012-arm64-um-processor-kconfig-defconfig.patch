@@ -1,23 +1,11 @@
 From: DevBox UML arm64 Port
 Subject: [PATCH 12/13] arm64/um: add processor.h, Kconfig, and arm64 defconfig
 
-processor.h — arch_thread struct for arm64 UML (holds faultinfo,
-  no debug registers unlike x86).  Also defines current_sp(),
-  current_bp() using inline asm, and cpu_relax() using arm64 YIELD.
-
-Kconfig — minimal arm64/um Kconfig: 64BIT, no SC_SIGNALS (arm64 only
-  uses rt_sigframe), MODULES_USE_ELF_RELA, 3-level page tables for
-  39-bit VA space (default arm64 with 4K pages).
-
-defconfig — arm64 UML defconfig based on x86_64_defconfig with
-  arm64-appropriate options: HOSTFS, UBD, slirp networking, no
-  x86-specific options.
-
 diff --git a/arch/arm64/um/asm/processor.h b/arch/arm64/um/asm/processor.h
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/asm/processor.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,52 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_PROCESSOR_ARM64_H
 +#define __UM_PROCESSOR_ARM64_H
@@ -74,7 +62,7 @@ diff --git a/arch/arm64/um/Kconfig b/arch/arm64/um/Kconfig
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/Kconfig
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,31 @@
 +# SPDX-License-Identifier: GPL-2.0
 +
 +config UML_ARM64
