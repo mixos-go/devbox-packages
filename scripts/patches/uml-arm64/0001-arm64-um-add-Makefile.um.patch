@@ -5,25 +5,20 @@ diff --git a/arch/arm64/Makefile.um b/arch/arm64/Makefile.um
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/Makefile.um
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,16 @@
 +# SPDX-License-Identifier: GPL-2.0
-+# arch/arm64/Makefile.um - UML build glue for arm64 hosts.
-+# Included by arch/um/Makefile when SUBARCH=aarch64/arm64.
++# arch/arm64/Makefile.um - included by arch/um/Makefile for arm64 hosts
 +
-+START_ADDR ?= 0x400000
++# Virtual address where UML loads (matches arm64 default mmap base)
++START := 0x400000
 +
-+# Flags for the UML host-side userspace objects (not the guest kernel)
-+SUBARCH_CFLAGS  := -D__arch_um__ -DSUBARCH=\"arm64\" \\
-+                   -fno-builtin
-+SUBARCH_AFLAGS  :=
-+SUBARCH_LDFLAGS :=
-+
-+# Output binary format
++# ELF output format
 +ELF_ARCH   := aarch64
 +ELF_FORMAT := elf64-littleaarch64
 +
-+# Stub symbols - used by arch/um/kernel/skas/uaccess.c
-+# stub_segv is a small trampoline mapped into each UML process for
-+# delivering faults back to the kernel thread.
++# arm64 compiler flags for UML host-side objects
++KBUILD_CFLAGS += -fno-builtin
++
++# Stub symbols used by arch/um/kernel/skas/uaccess.c
 +STUB_START = stub_segv
 +STUB_END   = stub_end

@@ -1,14 +1,14 @@
 From: DevBox UML arm64 Port
-Subject: [PATCH 13/13] arm64/um: add os-Linux/signal.c + os-Linux/prctl.c + os-Linux/uaccess.c
+Subject: [PATCH 13/13] arm64/um: add os-Linux/signal.c, prctl.c, uaccess.c
 
 diff --git a/arch/arm64/um/os-Linux/signal.c b/arch/arm64/um/os-Linux/signal.c
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/os-Linux/signal.c
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,42 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
-+ * arch/arm64/um/os-Linux/signal.c — host-side signal hooks for UML arm64.
++ * arch/arm64/um/os-Linux/signal.c - host-side signal hooks for UML arm64.
 + */
 +
 +#include <signal.h>
@@ -43,10 +43,47 @@ new file mode 100644
 +void arch_do_signal(struct pt_regs *regs, int sig)
 +{
 +	/*
-+	 * arm64 UML: no arch-specific pre-processing needed before
-+	 * do_signal(). FP/SIMD state is already in regs->regs.fp[]
-+	 * via get_fp_registers() called in skas/process.c at every
-+	 * guest entry. setup_signal_stack_si() saves it to the frame.
++	 * arm64 UML: no arch-specific pre-processing needed.
++	 * FP/SIMD state is already in regs->regs.fp[] via
++	 * get_fp_registers() in skas/process.c at every guest entry.
 +	 */
 +}
+diff --git a/arch/arm64/um/os-Linux/prctl.c b/arch/arm64/um/os-Linux/prctl.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/os-Linux/prctl.c
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/os-Linux/prctl.c - arch_prctl_defaults for UML arm64.
++ *
++ * Disable PAC keys so ptrace register reads are not corrupted on
++ * cores with pointer authentication enabled.
++ */
 +
++#include <sys/prctl.h>
++#include "os.h"
++
++void arch_prctl_defaults(void)
++{
++	prctl(PR_PAC_RESET_KEYS,
++	      PR_PAC_APIAKEY | PR_PAC_APIBKEY |
++	      PR_PAC_APDAKEY | PR_PAC_APDBKEY | PR_PAC_APGAKEY,
++	      0, 0, 0);
++}
+diff --git a/arch/arm64/um/os-Linux/uaccess.c b/arch/arm64/um/os-Linux/uaccess.c
+new file mode 100644
+--- /dev/null
++++ b/arch/arm64/um/os-Linux/uaccess.c
+@@ -0,0 +1,11 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * arch/arm64/um/os-Linux/uaccess.c - stub for UML arm64.
++ */
++
++#include "os.h"
++
++int arch_fixup(unsigned long address, struct uml_pt_regs *regs)
++{
++	return 0;
++}
