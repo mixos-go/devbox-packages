@@ -1,0 +1,17 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add asm/module.h override to prevent redefinition
+
+arm64 native module.h redefines mod_arch_specific which conflicts with
+asm-generic/module.h already included by the UML build.
+
+--- /dev/null
++++ b/arch/arm64/um/asm/module.h
+@@ -0,0 +1,8 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* UML override: use generic module support, no arm64 PLT/FTRACE extras */
++#ifndef __UM_ARM64_ASM_MODULE_H
++#define __UM_ARM64_ASM_MODULE_H
++
++#include <asm-generic/module.h>
++
++#endif

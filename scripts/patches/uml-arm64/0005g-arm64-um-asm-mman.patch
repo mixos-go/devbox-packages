@@ -1,0 +1,21 @@
+From: DevBox UML arm64 Port
+Subject: [PATCH] arm64: um: add asm/mman.h override to strip BTI/MTE
+
+arm64 native mman.h pulls in linux/fs.h, linux/shmem_fs.h and uses
+system_supports_bti/mte which are not available in UML context.
+Override to provide only what UML needs.
+
+--- /dev/null
++++ b/arch/arm64/um/asm/mman.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* UML override: strip BTI/MTE/POE from arch_calc_vm_prot_bits */
++#ifndef __UM_ARM64_ASM_MMAN_H
++#define __UM_ARM64_ASM_MMAN_H
++
++#include <uapi/asm/mman.h>
++#include <asm-generic/mman-common.h>
++
++/* UML does not support BTI/MTE/POE - use generic vm_prot_bits logic */
++
++#endif

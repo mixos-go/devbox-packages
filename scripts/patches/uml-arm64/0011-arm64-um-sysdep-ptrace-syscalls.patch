@@ -5,7 +5,7 @@ diff --git a/arch/arm64/um/shared/sysdep/ptrace.h b/arch/arm64/um/shared/sysdep/
 new file mode 100644
 --- /dev/null
 +++ b/arch/arm64/um/shared/sysdep/ptrace.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,87 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __SYSDEP_ARM64_PTRACE_H
 +#define __SYSDEP_ARM64_PTRACE_H
@@ -25,6 +25,25 @@ new file mode 100644
 + */
 +
 +#define MAX_FP_NR  FP_SIZE
++
++/*
++ * arm64 UML register file, stored as array of unsigned longs.
++ * Mirrors struct user_pt_regs (NT_PRSTATUS):
++ *   gp[0..30] = x0..x30, gp[31]=sp, gp[32]=pc, gp[33]=pstate
++ */
++struct uml_pt_regs {
++	unsigned long gp[MAX_REG_NR];
++	unsigned long fp[MAX_FP_NR];
++	struct faultinfo faultinfo;
++	long syscall;
++	int is_user;
++};
++
++#define EMPTY_UML_PT_REGS { }
++
++/* true if register set represents a userspace context */
++#define UPT_IS_USER(r)   ((r)->is_user)
++#define UPT_FAULTINFO(r) (&(r)->faultinfo)
 +
 +/* GP register direct index accessors */
 +#define REGS_X(r, n)   ((r)[(n)])
